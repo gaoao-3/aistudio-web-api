@@ -1,1 +1,0 @@
-function r(e){if(!e)return"-";try{return new Date(e).toLocaleString()}catch{return e}}function i(e){return isFinite(e)?e>=1e6?(e/1e6).toFixed(1).replace(/\.0$/,"")+"M":e>=1e3?(e/1e3).toFixed(1).replace(/\.0$/,"")+"K":String(e):"0"}export{i as a,r as f};

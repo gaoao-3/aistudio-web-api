@@ -8,8 +8,8 @@
     "typecheck": "pnpm --dir backend-ts typecheck && pnpm --dir frontend typecheck",
     "test": "pnpm --dir backend-ts test",
     "build": "pnpm --dir frontend build && pnpm --dir backend-ts build",
-    "start": "powershell -NoProfile -ExecutionPolicy Bypass -File backend-ts/start.ps1",
-    "start:fast": "powershell -NoProfile -ExecutionPolicy Bypass -File backend-ts/start.ps1 -SkipBuild",
+    "start": "node backend-ts/start.mjs",
+    "start:fast": "node backend-ts/start.mjs --skip-build",
     "dev:backend": "pnpm --dir backend-ts dev",
     "dev:frontend": "pnpm --dir frontend dev"
   }
