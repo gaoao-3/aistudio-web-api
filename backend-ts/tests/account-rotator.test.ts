@@ -59,3 +59,27 @@ describe("account rotation", () => {
     }
   });
 });
+
+describe("cooldown waiting", () => {
+  it("rejects with AbortError when the signal fires mid-cooldown", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aistudio-rotator-abort-"));
+    try {
+      const store = new AccountStore(directory);
+      await store.saveStorageState({
+        name: "A",
+        email: "a@example.com",
+        storageState: { cookies: [{ name: "SID", value: "a", domain: ".google.com", path: "/" }], origins: [] },
+      });
+      const rotator = new AccountRotator(store, "round_robin", 60);
+      const only = await rotator.getNextAccount();
+      assert.ok(only);
+      rotator.recordRateLimited(only.id);
+      const controller = new AbortController();
+      const pending = rotator.getNextAccount(controller.signal);
+      setTimeout(() => controller.abort(), 20);
+      await assert.rejects(pending, (error: unknown) => (error as Error).name === "AbortError");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});

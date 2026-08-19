@@ -214,6 +214,12 @@ describe("native Interactions bridge", () => {
         input: { type: "function_result", call_id: "call_1", result: { temperature: 28 } },
       } });
       assert.equal(second.status, "completed");
+      assert.deepEqual(second.usage, {
+        total_input_tokens: 8,
+        total_output_tokens: 4,
+        total_thought_tokens: 0,
+        total_tokens: 12,
+      });
       const secondRequest = gateway.calls[1]?.body as { contents: { parts: Record<string, unknown>[] }[] };
       assert.equal(secondRequest.contents.length, 3);
       assert.deepEqual(secondRequest.contents[1]?.parts[0]?.functionCall, { name: "weather", args: { city: "上海" }, id: "call_1" });
@@ -226,9 +232,15 @@ describe("native Interactions bridge", () => {
       gateway.responses.push({ candidates: [{ content: { parts: [{ text: "流式答案" }] } }] });
       const chunks: string[] = [];
       await bridge.request("interaction_create", { body: { model: "gemma-4-31b-it", input: "stream", stream: true, store: false } }, chunk => chunks.push(chunk));
-      assert.match(chunks.join(""), /"event_type":"step\.delta"/u);
-      assert.match(chunks.join(""), /"text":"流式答案"/u);
-      assert.match(chunks.join(""), /data: \[DONE\]/u);
+      const sse = chunks.join("");
+      assert.match(sse, /"event_type":"step\.delta"/u);
+      assert.match(sse, /"text":"流式答案"/u);
+      // The 2026-05 steps schema renames the terminal event and requires a
+      // named SSE event line alongside the data payload.
+      assert.match(sse, /event: interaction\.created\ndata: /u);
+      assert.match(sse, /event: interaction\.completed\ndata: /u);
+      assert.doesNotMatch(sse, /interaction\.complete"/u);
+      assert.match(sse, /event: done\ndata: \[DONE\]/u);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -257,8 +269,40 @@ describe("native Interactions bridge", () => {
     }
   });
 
-  it("dispatches native browser and remote login sessions", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "aistudio-native-login-"));
+  it("forwards generation_config and rejects unusable media content", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aistudio-native-generation-"));
+    try {
+      const gateway = new FakeGateway();
+      gateway.responses.push({ candidates: [{ content: { parts: [{ text: "结果" }] } }] });
+      const bridge = new NativeBackendBridge(
+        gateway,
+        new InteractionStore(directory, 0),
+        new AccountStore(join(directory, "accounts")),
+        new StatsStore(join(directory, "stats.json")),
+      );
+      await bridge.request("interaction_create", { body: {
+        model: "gemini-3-flash-preview",
+        input: "你好",
+        store: false,
+        generation_config: { thinking_level: "low", max_output_tokens: 256 },
+      } });
+      const body = gateway.calls[0]?.body as { generationConfig?: unknown };
+      assert.deepEqual(body.generationConfig, { thinkingConfig: { thinkingLevel: "low" }, maxOutputTokens: 256 });
+
+      await assert.rejects(
+        bridge.request("interaction_create", { body: {
+          model: "gemini-3-flash-preview",
+          input: [{ type: "image", image_url: "data:image/png;base64,AAAA" }],
+          store: false,
+        } }),
+        (error: unknown) => (error as { statusCode?: number }).statusCode === 400,
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("dispatches native browser and remote login sessions", async () => {    const directory = await mkdtemp(join(tmpdir(), "aistudio-native-login-"));
     try {
       const login = new FakeLogin();
       const bridge = new NativeBackendBridge(

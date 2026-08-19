@@ -123,6 +123,7 @@ function isPublicRoute(method: string, url: string): boolean {
 async function sendStream(
   reply: FastifyReply,
   operation: (onChunk: (chunk: string) => void, signal: AbortSignal) => Promise<unknown>,
+  options: { readonly doneMarker?: boolean } = {},
 ): Promise<void> {
   const controller = new AbortController();
   const onClose = (): void => {
@@ -143,7 +144,11 @@ async function sendStream(
   } catch (error) {
     if (!reply.raw.destroyed && !reply.raw.writableEnded && (error as Error).name !== "AbortError") {
       const detail = error instanceof BridgeError ? error.detail : errorDetail(String(error), "server_error");
-      reply.raw.write(`data: ${JSON.stringify({ error: detail })}\n\n`);
+      // The Gemini wire route must not emit event lines or [DONE] (its clients
+      // parse every data line as JSON); the Interactions route opts in.
+      const prefix = options.doneMarker ? "event: error\n" : "";
+      reply.raw.write(`${prefix}data: ${JSON.stringify({ error: detail })}\n\n`);
+      if (options.doneMarker) reply.raw.write("event: done\ndata: [DONE]\n\n");
     }
   } finally {
     reply.raw.off("close", onClose);
@@ -350,7 +355,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     app.post(`/${version}/interactions`, async (request, reply) => {
       const body = stripBuiltinToolsForApi(requestContext.get(request)?.webUi === true, bodyRecord(request.body));
       if (body.stream === true) {
-        await sendStream(reply, (onChunk, signal) => bridge.request("interaction_create", { body }, onChunk, signal));
+        // Validate before hijacking so 400/404 keep their real status codes.
+        await bridge.request("interaction_validate", { body });
+        await sendStream(reply, (onChunk, signal) => bridge.request("interaction_create", { body }, onChunk, signal), { doneMarker: true });
         return;
       }
       return bridge.request("interaction_create", { body });

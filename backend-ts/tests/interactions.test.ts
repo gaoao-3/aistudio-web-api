@@ -78,11 +78,11 @@ test("preserves Google Files URIs in multimedia content", () => {
   });
 });
 
-test("requires a call id when converting model tool calls", () => {
-  assert.throws(
-    () => outputToSteps({ function_calls: [{ name: "run_code", args: {} }] }),
-    /missing call_id/,
-  );
+test("synthesizes a call id when the model tool call has none", () => {
+  const steps = outputToSteps({ function_calls: [{ name: "run_code", args: {} }] });
+  const call = steps.find(step => step.type === "function_call");
+  assert.ok(call && call.type === "function_call");
+  assert.match(call.id, /^call_[0-9a-f]{24}$/u);
 });
 
 test("validates external Interactions JSON before conversion", () => {
@@ -127,4 +127,109 @@ test("reports the exact path for malformed function arguments", () => {
     }),
     /input\.arguments\.resource_filter: /,
   );
+});
+
+test("maps generation_config onto the generateContent camelCase names", () => {
+  const request = parseInteractionCreateRequest({
+    model: "gemini-3.6-flash",
+    input: "你好",
+    generation_config: {
+      thinking_level: "low",
+      temperature: 0.4,
+      top_p: 0.8,
+      max_output_tokens: 512,
+      image_config: { aspect_ratio: "1:1", image_size: "1K" },
+    },
+  });
+
+  assert.deepEqual(interactionToGeminiRequest(request).generationConfig, {
+    thinkingConfig: { thinkingLevel: "low" },
+    temperature: 0.4,
+    topP: 0.8,
+    maxOutputTokens: 512,
+    imageConfig: { aspectRatio: "1:1", imageSize: "1K" },
+  });
+});
+
+test("omits generationConfig when the request carries no generation_config", () => {
+  const request = parseInteractionCreateRequest({ model: "gemini-3.6-flash", input: "你好" });
+  assert.equal(interactionToGeminiRequest(request).generationConfig, undefined);
+});
+
+test("rejects media content that carries neither inline data nor a uri", () => {
+  const request = parseInteractionCreateRequest({
+    model: "gemini-3.6-flash",
+    // The Interactions API spells inline images as data + mime_type; an
+    // OpenAI-style image_url is not silently dropped.
+    input: [{ type: "image", image_url: "data:image/png;base64,AAAA" }],
+  });
+
+  assert.throws(() => interactionToGeminiRequest(request), /image content requires/u);
+});
+
+test("attaches a thinking signature to the thought step", () => {
+  const steps = outputToSteps({ thinking: "推理过程", thinking_signature: "sig-think" });
+  assert.deepEqual(steps[0], {
+    type: "thought",
+    status: "done",
+    summary: [{ type: "text", text: "推理过程" }],
+    signature: "sig-think",
+  });
+});
+
+test("replays a thought signature even without a summary", () => {
+  const contents = stepsToContents([{ type: "thought", signature: "sig-only" }]);
+  assert.deepEqual(contents[0]?.parts, [{ text: "", thought: true, thoughtSignature: "sig-only" }]);
+});
+
+test("puts a thought signature only on the first summary part", () => {
+  const contents = stepsToContents([{
+    type: "thought",
+    signature: "sig-multi",
+    summary: [
+      { type: "text", text: "第一段" },
+      { type: "text", text: "第二段" },
+    ],
+  }]);
+  assert.equal(contents[0]?.parts[0]?.thoughtSignature, "sig-multi");
+  assert.equal(contents[0]?.parts[1]?.thoughtSignature, undefined);
+});
+
+test("rejects unsupported generation_config keys instead of dropping them", () => {
+  assert.throws(
+    () => interactionToGeminiRequest({ model: "m", input: "hi", generation_config: { response_mime_type: "application/json" } }),
+    /generation_config\.response_mime_type is not supported/,
+  );
+});
+
+test("rejects invalid thinking_level values", () => {
+  assert.throws(
+    () => interactionToGeminiRequest({ model: "m", input: "hi", generation_config: { thinking_level: { x: 1 } as never } }),
+    /thinking_level must be one of/,
+  );
+  assert.throws(
+    () => interactionToGeminiRequest({ model: "m", input: "hi", generation_config: { thinking_level: "ultra" } }),
+    /thinking_level must be one of/,
+  );
+});
+
+test("rejects non-numeric generation_config numbers", () => {
+  assert.throws(
+    () => interactionToGeminiRequest({ model: "m", input: "hi", generation_config: { temperature: "hot" as never } }),
+    /generation_config\.temperature must be a number/,
+  );
+});
+
+test("maps supported generation_config fields", () => {
+  const request = interactionToGeminiRequest({
+    model: "m",
+    input: "hi",
+    generation_config: { temperature: 0.5, max_output_tokens: 64, thinking_level: "low", stop_sequences: ["END"] },
+  });
+  assert.deepEqual(request.generationConfig, {
+    temperature: 0.5,
+    maxOutputTokens: 64,
+    thinkingConfig: { thinkingLevel: "low" },
+    stopSequences: ["END"],
+  });
 });

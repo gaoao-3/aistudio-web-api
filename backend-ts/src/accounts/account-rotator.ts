@@ -77,12 +77,14 @@ export class AccountRotator {
     this.cooldownSeconds = Math.max(0, Math.floor(cooldownSeconds));
   }
 
-  async getNextAccount(): Promise<AccountMeta | undefined> {
+  async getNextAccount(signal?: AbortSignal): Promise<AccountMeta | undefined> {
     for (;;) {
+      if (signal?.aborted) throw Object.assign(new Error("Native gateway request aborted"), { name: "AbortError" });
       const selection = await this.mutex.run(async () => this.selectAccount());
       if (selection.account) return selection.account;
       if (selection.waitMs <= 0) return undefined;
-      await delay(selection.waitMs);
+      // Rejects with an AbortError when the client disconnects mid-cooldown.
+      await delay(selection.waitMs, undefined, { signal });
     }
   }
 

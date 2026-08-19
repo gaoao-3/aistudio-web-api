@@ -7,12 +7,12 @@ import type { Attachment, AttachmentKind, BuiltinToolName, InteractionRequest, I
 
 interface StreamEvent {
   event_type?: string;
+  index?: number;
   delta?: {
     type?: string;
     text?: string;
     data?: string;
     mime_type?: string;
-    content?: { text?: string };
   };
   step?: InteractionStep;
   error?: { message?: string };
@@ -226,6 +226,9 @@ export function useChat() {
         msgs.value.push({ role: 'assistant', content: '', thinking: '', showThinking: false });
         const idx = msgs.value.length - 1;
         let buf = '';
+        // 新版 steps schema 下 thought 与 model_output 的文本 delta 形状相同，
+        // 只能靠 step.start 声明的 index → 类型来区分。
+        const stepTypes = new Map<number, string>();
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -238,12 +241,17 @@ export function useChat() {
                 const d = JSON.parse(ln.slice(6)) as StreamEvent;
                 if (d.event_type === 'step.delta') {
                   const delta = d.delta || {};
-                  if (delta.type === 'text' && delta.text) msgs.value[idx].content += delta.text;
-                  else if (delta.type === 'thought_summary' && delta.content && delta.content.text) msgs.value[idx].thinking! += delta.content.text;
-                  else if (delta.type === 'image' && delta.data) msgs.value[idx].content += `![image](data:${delta.mime_type || 'image/png'};base64,${delta.data})\n`;
-                } else if (d.event_type === 'step.start' && d.step && d.step.type === 'function_call') {
-                  if (!msgs.value[idx].toolCalls) msgs.value[idx].toolCalls = [];
-                  msgs.value[idx].toolCalls!.push({ id: d.step.id, name: d.step.name, arguments: d.step.arguments, signature: d.step.signature });
+                  const isThought = stepTypes.get(d.index ?? -1) === 'thought';
+                  if (delta.type === 'text' && delta.text) {
+                    if (isThought) msgs.value[idx].thinking! += delta.text;
+                    else msgs.value[idx].content += delta.text;
+                  } else if (delta.type === 'image' && delta.data) msgs.value[idx].content += `![image](data:${delta.mime_type || 'image/png'};base64,${delta.data})\n`;
+                } else if (d.event_type === 'step.start' && d.step) {
+                  stepTypes.set(d.index ?? -1, d.step.type);
+                  if (d.step.type === 'function_call') {
+                    if (!msgs.value[idx].toolCalls) msgs.value[idx].toolCalls = [];
+                    msgs.value[idx].toolCalls!.push({ id: d.step.id, name: d.step.name, arguments: d.step.arguments, signature: d.step.signature });
+                  }
                 } else if (d.event_type === 'error') {
                   msgs.value[idx].error = (d.error && d.error.message) || 'stream error';
                 }

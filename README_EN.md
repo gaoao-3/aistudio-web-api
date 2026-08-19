@@ -39,12 +39,12 @@ Exposes both the **Gemini-native API** and the **Interactions API** — with mul
 |  | Capability | Description |
 |:---:|---|---|
 | ⚡ | **Gemini-native API** | `/v1beta/models/{model}:generateContent`, `:streamGenerateContent`, `/v1beta/models` |
-| 💬 | **Interactions API** | `/v1/interactions`, `/v1beta/interactions`, and `/v1beta2/interactions` (create / get / delete / list / cancel), locally emulated `previous_interaction_id` server state, true incremental SSE events |
+| 💬 | **Interactions API** | `/v1/interactions`, `/v1beta/interactions`, and `/v1beta2/interactions` (create / get / delete / list / cancel), locally emulated `previous_interaction_id` server state, standard-SSE events (`interaction.created` → `interaction.completed` / `interaction.requires_action`), client-disconnect abort |
 | 🖥️ | **Native TypeScript backend** | Fastify, CloakBrowser, BotGuard hooks, wire codec, response parsing, and Interactions state all run in Node.js |
 | 🌐 | **WebUI** | AI Studio-style interface: chat, history, accounts, usage stats; mobile drawer layout |
 | 📡 | **Live model catalog** | Reads the AI Studio panel through the logged-in browser session, with a built-in fallback list on failure |
 | 🛠️ | **Native tools** | WebUI and API support explicit Google Search, Code Execution, Google Maps, URL Context, and custom `functionCall` / `functionResponse` replay with `thought_signature` passthrough |
-| 🧠 | **Thinking** | Thought steps / `thought_summary` streaming deltas, `total_thought_tokens` accounting |
+| 🧠 | **Thinking** | Thought steps / streaming text deltas, `thinking_signature` passthrough, `total_thought_tokens` accounting |
 | 🖼️ | **Multimodal** | The Chat page reads images, audio, video, PDF, text, and code files; the native API accepts `inlineData` and existing Google Files `fileData` |
 | 🛡️ | **Anti-detection** | CloakBrowser fingerprint-evasion Chromium, BotGuard snapshot auto-location via feature matching |
 | 🔁 | **Multi-account management** | Local browser login, remote assisted login, cookie import, request-level round-robin / LRU / least-rate-limited rotation, and automatic cooldown after 429s |
@@ -123,6 +123,35 @@ curl http://localhost:3006/v1beta2/interactions \
     "previous_interaction_id": "v1_xxx"
   }'
 ```
+
+# Generation parameters use snake_case and are mapped to the
+# generateContent camelCase wire names automatically
+curl http://localhost:3006/v1beta2/interactions \
+  -H "Authorization: Bearer your-secret-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3-flash-preview",
+    "input": "Draw an image",
+    "generation_config": {
+      "thinking_level": "low",
+      "image_config": { "aspect_ratio": "1:1", "image_size": "1K" }
+    }
+  }'
+
+Streaming responses use standard SSE framing (`event:` + `data:` lines):
+
+```text
+event: interaction.created    # carries the interaction object
+event: interaction.in_progress
+event: step.start             # declares the step type via index / step
+event: step.delta             # text / image / audio increments
+event: step.stop
+event: interaction.completed  # or interaction.requires_action (awaiting a function call)
+event: done
+data: [DONE]
+```
+
+Thinking text and body text both arrive as `step.delta`; the index→type mapping from `step.start` tells them apart, and tool round-trips end with `requires_action`. Disconnecting the client aborts the upstream browser request and releases the account.
 
 **Official SDK:**
 

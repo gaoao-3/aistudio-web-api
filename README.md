@@ -55,7 +55,7 @@
 |---|---|
 | Gemini 原生接口 | `generateContent` 非流式生成、`streamGenerateContent` SSE 流式生成 |
 | Interactions API | `/v1/interactions`、`/v1beta/interactions`、`/v1beta2/interactions` 的创建、查询、列表、删除和流式事件 |
-| AI Studio 模型目录 | 从已登录的 AI Studio 页面读取实时模型；读取失败时返回内置兜底目录 |
+| Interactions API | `/v1/interactions`、`/v1beta/interactions`、`/v1beta2/interactions` 的创建、查询、列表、删除和标准 SSE 流式事件 |
 | 多模态输入 | 图片、音频、视频、PDF、文本和常见代码文件；支持 `inlineData` 与 Google Files `fileData` |
 | 原生工具 | WebUI 和 API 可显式使用 Google 搜索、代码执行、Google Maps、URL Context；自定义函数调用保留多轮所需的 `thought_signature` |
 | 思考与统计 | 思考摘要、SSE 增量、token 用量和按模型统计 |
@@ -274,8 +274,24 @@ curl http://localhost:3006/v1beta/interactions \
 | `stream` | `true` 时返回 SSE |
 | `store` | 是否保存 Interaction，默认为保存 |
 | `previous_interaction_id` | 继续已有多轮 Interaction |
+| `generation_config` | 生成参数（蛇形命名）：`top_p`、`top_k`、`max_output_tokens`、`stop_sequences`、`temperature`、`thinking_level`、`image_config` 等，自动映射为 Gemini 的 camelCase 名称 |
 
 Interactions 会保存到运行目录。默认只保留最新 30 条；`AISTUDIO_INTERACTIONS_MAX_COUNT=0` 表示不限制条数，也可以使用 `AISTUDIO_INTERACTIONS_TTL_SECONDS` 启用按时间清理。
+
+流式请求（`stream: true`）返回标准 SSE 事件序列：
+
+```text
+event: interaction.created    # 创建成功，携带 interaction 对象
+event: interaction.in_progress
+event: step.start             # index / step 声明步骤类型
+event: step.delta             # text / image / audio 增量
+event: step.stop
+event: interaction.completed  # 或 interaction.requires_action（等待函数调用）
+event: done
+data: [DONE]
+```
+
+思考文本和正文都通过 `step.delta` 下发，用 `step.start` 里的 index → 类型区分；函数调用结果以 `requires_action` 结束。客户端断开连接时，服务会中止对应的上游浏览器请求并释放账号。
 
 ## WebUI
 

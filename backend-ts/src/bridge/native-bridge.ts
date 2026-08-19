@@ -3,7 +3,7 @@ import { BridgeError, type BackendBridge } from "./backend-bridge.js";
 import { NativeGateway } from "../gateway/native-gateway.js";
 import { InteractionStore } from "../interactions/store.js";
 import { interactionToGeminiRequest, outputToSteps } from "../interactions/normalize.js";
-import type { BuiltinToolName, InteractionContent, InteractionCreateRequest, InteractionStep, JsonValue, ModelOutput } from "../interactions/types.js";
+import type { BuiltinToolName, GeminiGenerateRequest, InteractionContent, InteractionCreateRequest, InteractionStep, JsonValue, ModelOutput } from "../interactions/types.js";
 import { parseInteractionCreateRequest } from "../interactions/validate.js";
 import { settings } from "../config.js";
 import { AccountStore } from "../accounts/account-store.js";
@@ -24,20 +24,28 @@ function interactionId(): string {
 }
 
 function currentInputSteps(input: InteractionCreateRequest["input"]): InteractionStep[] {
-  if (typeof input === "string") return [{ type: "user_input", status: "done", content: [{ type: "text", text: input }] }];
-  if (Array.isArray(input)) {
+  let steps: InteractionStep[];
+  if (typeof input === "string") {
+    steps = [{ type: "user_input", status: "done", content: [{ type: "text", text: input }] }];
+  } else if (Array.isArray(input)) {
     if (input.length === 0) return [];
     const first = input[0];
-    if (isRecord(first) && ["text", "image", "audio", "document"].includes(String(first.type))) {
-      return [{ type: "user_input", status: "done", content: input as readonly InteractionContent[] }];
-    }
-    return (input as readonly InteractionStep[]).map(step => ({ ...step, status: step.type === "function_call" ? "waiting" : "done" }) as InteractionStep);
+    steps = isRecord(first) && ["text", "image", "audio", "document"].includes(String(first.type))
+      ? [{ type: "user_input", status: "done", content: input as readonly InteractionContent[] }]
+      : [...(input as readonly InteractionStep[])];
+  } else {
+    const single = input as InteractionContent | InteractionStep;
+    steps = ["text", "image", "audio", "document"].includes(single.type)
+      ? [{ type: "user_input", status: "done", content: [single as InteractionContent] }]
+      : [single as InteractionStep];
   }
-  const single = input as InteractionContent | InteractionStep;
-  if (["text", "image", "audio", "document"].includes(single.type)) {
-    return [{ type: "user_input", status: "done", content: [single as InteractionContent] }];
-  }
-  return [{ ...single, status: single.type === "function_call" ? "waiting" : "done" } as InteractionStep];
+  // A client-provided function_call whose function_result rides along in the
+  // same input is already answered; only unmatched calls stay waiting.
+  const answered = new Set(steps.flatMap(step => step.type === "function_result" ? [step.call_id] : []));
+  return steps.map(step => ({
+    ...step,
+    status: step.type === "function_call" && !answered.has(step.id) ? "waiting" : "done",
+  }) as InteractionStep);
 }
 
 function geminiOutput(response: Record<string, unknown>): ModelOutput {
@@ -54,8 +62,10 @@ function geminiOutput(response: Record<string, unknown>): ModelOutput {
       ...(typeof part.thoughtSignature === "string" ? { thought_signature: part.thoughtSignature } : {}),
     }];
   });
+  const thinkingSignature = parts.find(part => part.thought === true && typeof part.thoughtSignature === "string")?.thoughtSignature as string | undefined;
   return {
     thinking: parts.filter(part => part.thought === true && typeof part.text === "string").map(part => part.text).join(""),
+    ...(thinkingSignature ? { thinking_signature: thinkingSignature } : {}),
     text: parts.filter(part => part.thought !== true && typeof part.text === "string").map(part => part.text).join(""),
     function_calls: functionCalls,
     images: parts.flatMap(part => {
@@ -97,16 +107,27 @@ class InteractionStreamEmitter {
   private sequence = 0;
   private index = -1;
   private activeType: "thought" | "model_output" | undefined;
+  private interactionId = "";
+  private started = false;
 
   constructor(private readonly onChunk: (chunk: string) => void) {}
 
+  created(id: string, model: string): void {
+    this.interactionId = id;
+    this.send("interaction.created", { interaction: { id, object: "interaction", model, status: "in_progress" } });
+  }
+
   push(response: Record<string, unknown>): void {
+    if (!this.started) {
+      this.started = true;
+      this.send("interaction.in_progress", { interaction_id: this.interactionId });
+    }
     for (const step of outputToSteps(geminiOutput(response))) {
       if (step.type === "function_call") {
         this.stopActive();
         const index = ++this.index;
-        this.send({ event_type: "step.start", index, step });
-        this.send({ event_type: "step.stop", index, status: step.status ?? "done" });
+        this.send("step.start", { index, step });
+        this.send("step.stop", { index, status: step.status ?? "done" });
         continue;
       }
       if (step.type !== "thought" && step.type !== "model_output") continue;
@@ -117,19 +138,19 @@ class InteractionStreamEmitter {
         const emptyStep = step.type === "thought"
           ? { type: "thought", status: "in_progress", summary: [] }
           : { type: "model_output", status: "in_progress", content: [] };
-        this.send({ event_type: "step.start", index: this.index, step: emptyStep });
+        this.send("step.start", { index: this.index, step: emptyStep });
       }
       if (step.type === "thought") {
         for (const item of step.summary ?? []) {
-          if (item.type === "text") this.send({ event_type: "step.delta", index: this.index, delta: { type: "thought_summary", content: { text: item.text } } });
+          if (item.type === "text") this.send("step.delta", { index: this.index, delta: { type: "text", text: item.text } });
         }
       } else {
         for (const item of step.content) {
-          if (item.type === "text") this.send({ event_type: "step.delta", index: this.index, delta: { type: "text", text: item.text } });
+          if (item.type === "text") this.send("step.delta", { index: this.index, delta: { type: "text", text: item.text } });
           else if (item.type === "image" && item.data) {
-            this.send({ event_type: "step.delta", index: this.index, delta: { type: "image", data: item.data, mime_type: item.mime_type } });
+            this.send("step.delta", { index: this.index, delta: { type: "image", data: item.data, mime_type: item.mime_type } });
           } else if (item.type === "audio" && item.data) {
-            this.send({ event_type: "step.delta", index: this.index, delta: { type: "audio", data: item.data, mime_type: item.mime_type } });
+            this.send("step.delta", { index: this.index, delta: { type: "audio", data: item.data, mime_type: item.mime_type } });
           }
         }
       }
@@ -137,19 +158,27 @@ class InteractionStreamEmitter {
   }
 
   complete(interaction: Record<string, unknown>): void {
+    if (!this.started) {
+      // No delta ever pushed (e.g. an immediate function_call): still emit the
+      // in_progress event so the sequence created → in_progress → terminal holds.
+      this.started = true;
+      this.send("interaction.in_progress", { interaction_id: this.interactionId });
+    }
     this.stopActive();
-    this.send({ event_type: "interaction.complete", interaction });
-    this.onChunk("data: [DONE]\n\n");
+    const terminal = interaction.status === "requires_action" ? "interaction.requires_action" : "interaction.completed";
+    this.send(terminal, { interaction });
+    this.onChunk("event: done\ndata: [DONE]\n\n");
   }
 
   private stopActive(): void {
     if (!this.activeType) return;
-    this.send({ event_type: "step.stop", index: this.index, status: "done" });
+    this.send("step.stop", { index: this.index, status: "done" });
     this.activeType = undefined;
   }
 
-  private send(payload: Record<string, unknown>): void {
-    this.onChunk(`data: ${JSON.stringify({ event_id: `evt_${++this.sequence}`, ...payload })}\n\n`);
+  private send(eventType: string, payload: Record<string, unknown>): void {
+    const data = JSON.stringify({ event_id: `evt_${++this.sequence}`, event_type: eventType, ...payload });
+    this.onChunk(`event: ${eventType}\ndata: ${data}\n\n`);
   }
 }
 
@@ -158,7 +187,7 @@ export interface NativeGatewayBackend {
   close(): Promise<void>;
   switchAuth(authFile: string): Promise<void>;
   models(): Promise<Record<string, unknown>[]>;
-  generate(model: string, body: unknown): Promise<Record<string, unknown>>;
+  generate(model: string, body: unknown, signal?: AbortSignal): Promise<Record<string, unknown>>;
   generateStream(model: string, body: unknown, onResponse: (response: Record<string, unknown>) => void, signal?: AbortSignal): Promise<Record<string, unknown>>;
   inspectAccountProfile?(): Promise<AccountProfile>;
 }
@@ -344,13 +373,16 @@ export class NativeBackendBridge implements BackendBridge {
         );
         await this.stats.record(model, "success", isRecord(response.usageMetadata) ? response.usageMetadata : undefined);
       } catch (error) {
-        await this.stats.record(model, isRateLimitedError(error) ? "rate_limited" : "errors");
+        // rate_limited is already counted per failed attempt by onRateLimited.
+        if (!isRateLimitedError(error)) await this.stats.record(model, "errors");
         throw error;
       }
-      if (params.stream === true && onChunk) {
-        onChunk("data: [DONE]\n\n");
-      }
+      // Gemini SSE 协议没有 [DONE] 结束标记；发送它会让客户端（如 pi 的
+      // google-generative-ai 适配器）把 "[DONE]" 当 JSON 解析而报错，流自然结束即可。
       result = response;
+    } else if (method === "interaction_validate") {
+      await this.prepareInteraction(isRecord(params.body) ? params.body : {});
+      result = { ok: true };
     } else if (method === "interaction_create") {
       result = await this.createInteraction(isRecord(params.body) ? params.body : {}, onChunk, signal);
     } else {
@@ -411,14 +443,14 @@ export class NativeBackendBridge implements BackendBridge {
     if (all.length === 0) {
       return onChunk
         ? this.gateway.generateStream(model, body, onChunk, signal)
-        : this.gateway.generate(model, body);
+        : this.gateway.generate(model, body, signal);
     }
     const maxAttempts = Math.min(Math.max(1, settings.accountMaxRetries), all.length);
     const attempted = new Set<string>();
     let lastError: unknown;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       if (signal?.aborted) throw Object.assign(new Error("Native gateway request aborted"), { name: "AbortError" });
-      const account = await this.rotator.getNextAccount();
+      const account = await this.rotator.getNextAccount(signal);
       if (!account) break;
       if (attempted.has(account.id)) {
         attempt -= 1;
@@ -429,10 +461,12 @@ export class NativeBackendBridge implements BackendBridge {
       let emitted = false;
       try {
         const gateway = await this.gatewayForAccount(account.id);
-        await this.accounts.activate(account.id);
+        // activate() is a disk write; skip it when the account is already active.
+        const active = await this.accounts.active();
+        if (active?.id !== account.id) await this.accounts.activate(account.id);
         const response = onChunk
           ? await gateway.generateStream(model, body, chunk => { emitted = true; onChunk(chunk); }, signal)
-          : await gateway.generate(model, body);
+          : await gateway.generate(model, body, signal);
         this.rotator.recordSuccess(account.id);
         return response;
       } catch (error) {
@@ -450,7 +484,13 @@ export class NativeBackendBridge implements BackendBridge {
     throw lastError ?? new Error("没有可用的 Google 账号");
   }
 
-  private async createInteraction(body: Record<string, unknown>, onChunk?: (chunk: string) => void, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  // Request-side validation shared by the stream and non-stream paths. The
+  // streaming route calls this before sending SSE headers so bad requests get
+  // a real 4xx status instead of an HTTP 200 error frame.
+  private async prepareInteraction(body: Record<string, unknown>): Promise<{
+    request: InteractionCreateRequest;
+    generationBody: Record<string, unknown>;
+  }> {
     let request: InteractionCreateRequest;
     try { request = parseInteractionCreateRequest(body); }
     catch (error) { throw new BridgeError(400, { message: String(error), type: "bad_request" }); }
@@ -462,12 +502,22 @@ export class NativeBackendBridge implements BackendBridge {
       try { history = await this.interactions.loadHistorySteps(request.previous_interaction_id); }
       catch { throw new BridgeError(404, { message: `Interaction not found: ${request.previous_interaction_id}`, type: "not_found" }); }
     }
-    const gemini = interactionToGeminiRequest(request, history);
-    const generationBody = {
-      ...gemini,
-      ...(interactionTools(request) ? { tools: interactionTools(request) } : {}),
+    let gemini: GeminiGenerateRequest;
+    try { gemini = interactionToGeminiRequest(request, history); }
+    catch (error) { throw new BridgeError(400, { message: String(error), type: "bad_request" }); }
+    const tools = interactionTools(request);
+    return {
+      request,
+      generationBody: { ...gemini, ...(tools ? { tools } : {}) },
     };
+  }
+
+  private async createInteraction(body: Record<string, unknown>, onChunk?: (chunk: string) => void, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const { request, generationBody } = await this.prepareInteraction(body);
+    const id = interactionId();
+    const model = request.model.replace(/^models\//u, "");
     const stream = body.stream === true && onChunk ? new InteractionStreamEmitter(onChunk) : undefined;
+    stream?.created(id, model);
     let response: Record<string, unknown>;
     try {
       response = await this.generateWithRotation(
@@ -479,25 +529,31 @@ export class NativeBackendBridge implements BackendBridge {
       );
       await this.stats.record(request.model, "success", isRecord(response.usageMetadata) ? response.usageMetadata : undefined);
     } catch (error) {
-      await this.stats.record(request.model, isRateLimitedError(error) ? "rate_limited" : "errors");
+      // rate_limited is already counted per failed attempt by onRateLimited.
+      if (!isRateLimitedError(error)) await this.stats.record(request.model, "errors");
       throw error;
     }
-    const output = geminiOutput(response);
-    const outputSteps = outputToSteps(output);
-    const id = interactionId();
+    let outputSteps: InteractionStep[];
+    try {
+      outputSteps = outputToSteps(geminiOutput(response));
+    } catch (error) {
+      await this.stats.record(request.model, "errors");
+      throw new BridgeError(502, { message: `Failed to parse upstream response: ${String(error)}`, type: "upstream_error" });
+    }
     const created = new Date().toISOString();
     const usageMetadata = isRecord(response.usageMetadata) ? response.usageMetadata : {};
     const interaction: Record<string, unknown> = {
       id,
       object: "interaction",
-      model: request.model.replace(/^models\//u, ""),
+      model,
       status: outputSteps.some(step => step.type === "function_call") ? "requires_action" : "completed",
       created,
       previous_interaction_id: request.previous_interaction_id ?? null,
       steps: [...currentInputSteps(request.input), ...outputSteps],
       usage: {
         total_input_tokens: Number(usageMetadata.promptTokenCount ?? 0),
-        total_output_tokens: Number(usageMetadata.candidatesTokenCount ?? 0) + Number(usageMetadata.thoughtsTokenCount ?? 0),
+        total_output_tokens: Number(usageMetadata.candidatesTokenCount ?? 0),
+        total_thought_tokens: Number(usageMetadata.thoughtsTokenCount ?? 0),
         total_tokens: Number(usageMetadata.totalTokenCount ?? 0),
       },
     };

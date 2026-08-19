@@ -6,8 +6,12 @@ build/
 .vscode/
 docs/
 .env
-/test_*
 scripts/
+
+# 本地工具目录
+.mindfs/
+.pi/
+.workflow/
 
 # 前端构建
 frontend/node_modules/

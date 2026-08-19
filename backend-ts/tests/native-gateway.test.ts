@@ -25,4 +25,19 @@ describe("native gateway tool-result fallback", () => {
       parts: [{ text: "weather?\n\n[assistant tool call: get_weather]\n{\"city\":\"上海\"}\n\n[tool result: get_weather]\n{\"temperature\":\"28C\"}" }],
     }]);
   });
+
+  it("keeps media parts when flattening a timeline that mixes tools and images", () => {
+    assert.deepEqual(flattenFunctionContents([
+      { role: "user", parts: [{ text: "describe this" }] },
+      { role: "model", parts: [{ functionCall: ["read_skill", {}, "call_1"] }] },
+      { role: "user", parts: [{ functionResponse: ["read_skill", { ok: true }, "call_1"] }] },
+      { role: "user", parts: [{ inlineData: ["image/png", "aGVsbG8="] }] },
+    ]), [{
+      role: "user",
+      parts: [
+        { text: "describe this\n\n[assistant tool call: read_skill]\n{}\n\n[tool result: read_skill]\n{\"ok\":true}" },
+        { inlineData: ["image/png", "aGVsbG8="] },
+      ],
+    }]);
+  });
 });

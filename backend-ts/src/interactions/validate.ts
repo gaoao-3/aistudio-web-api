@@ -186,10 +186,16 @@ export function parseInteractionInput(value: unknown, path = "input"): Interacti
     if (typeof first.type === "string" && CONTENT_TYPES.has(first.type)) {
       return value.map((item, index) => parseInteractionContent(item, `${path}[${index}]`));
     }
+    if (typeof first.type === "string" && !STEP_TYPES.has(first.type)) {
+      throw new InteractionValidationError(`${path}[0].type`, `unsupported content or step type "${first.type}"`);
+    }
     return value.map((item, index) => parseInteractionStep(item, `${path}[${index}]`));
   }
   const object = record(value, path);
   if (typeof object.type === "string" && CONTENT_TYPES.has(object.type)) return parseInteractionContent(object, path);
+  if (typeof object.type === "string" && !STEP_TYPES.has(object.type)) {
+    throw new InteractionValidationError(`${path}.type`, `unsupported content or step type "${object.type}"`);
+  }
   return parseInteractionStep(object, path);
 }
 
@@ -208,6 +214,9 @@ export function parseInteractionCreateRequest(value: unknown): InteractionCreate
     : Array.isArray(source.tools)
       ? source.tools.map((tool, index) => parseTool(tool, `request.tools[${index}]`))
       : (() => { throw new InteractionValidationError("request.tools", "expected an array"); })();
+  const generationConfig = source.generation_config === undefined
+    ? undefined
+    : jsonObject(source.generation_config, "request.generation_config");
   return {
     model,
     input: parseInteractionInput(source.input),
@@ -215,5 +224,6 @@ export function parseInteractionCreateRequest(value: unknown): InteractionCreate
     ...(systemInstruction !== undefined ? { system_instruction: systemInstruction } : {}),
     ...(source.store !== undefined ? { store: source.store } : {}),
     ...(tools !== undefined ? { tools } : {}),
+    ...(generationConfig !== undefined ? { generation_config: generationConfig } : {}),
   };
 }

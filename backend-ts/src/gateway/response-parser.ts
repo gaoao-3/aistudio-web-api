@@ -10,6 +10,7 @@ interface ParsedPart {
 export interface ParsedCandidate {
   text: string;
   thinking: string;
+  thinkingSignature?: string;
   parts: Record<string, unknown>[];
   finishReason?: number;
   safetyRatings?: unknown[];
@@ -124,6 +125,9 @@ export function parseAIStudioResponse(raw: string): ParsedAIStudioResponse {
     const rawParts = content && Array.isArray(content[0]) ? content[0] : [];
     for (const rawPart of rawParts) {
       const part = parsePart(rawPart);
+      if (part.thought && part.thoughtSignature && candidate.thinkingSignature === undefined) {
+        candidate.thinkingSignature = part.thoughtSignature;
+      }
       if (part.text) {
         if (part.thought) candidate.thinking += part.text;
         else candidate.text += part.text;
@@ -152,7 +156,11 @@ export function parseAIStudioResponse(raw: string): ParsedAIStudioResponse {
     if (typeof first[1] === "number") candidate.finishReason = first[1];
     if (Array.isArray(first[4])) candidate.safetyRatings = first[4];
   }
-  if (candidate.thinking) candidate.parts.unshift({ text: candidate.thinking, thought: true });
+  if (candidate.thinking) candidate.parts.unshift({
+    text: candidate.thinking,
+    thought: true,
+    ...(candidate.thinkingSignature ? { thoughtSignature: candidate.thinkingSignature } : {}),
+  });
   if (candidate.text) candidate.parts.push({ text: candidate.text });
   if (candidate.parts.length === 0) candidate.parts.push({ text: "" });
   const last = chunks.at(-1)!;

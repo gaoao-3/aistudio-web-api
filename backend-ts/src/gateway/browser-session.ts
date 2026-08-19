@@ -109,26 +109,47 @@ export class NativeBrowserSession {
     });
   }
 
-  async replay(body: string, timeoutMs = settings.browserTimeoutMs): Promise<{ status: number; body: string }> {
+  async replay(body: string, timeoutMs = settings.browserTimeoutMs, signal?: AbortSignal): Promise<{ status: number; body: string }> {
     return this.runExclusive(async () => {
+      if (signal?.aborted) throw Object.assign(new Error("Native gateway request aborted"), { name: "AbortError" });
       const page = await this.ensureBotGuard();
       const template = this.firstTemplate();
-      return page.evaluate(async (args) => {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), args.timeoutMs);
-        try {
-          const response = await fetch(args.url, {
-            method: "POST",
-            credentials: "include",
-            headers: args.headers,
-            body: args.body,
-            signal: controller.signal,
-          });
-          return { status: response.status, body: await response.text() };
-        } finally {
-          clearTimeout(timer);
-        }
-      }, { url: template.url, headers: template.headers, body, timeoutMs });
+      const requestId = createHash("sha256").update(`${Date.now()}:${Math.random()}`).digest("hex").slice(0, 16);
+      const abortFetch = (): void => {
+        void page.evaluate((id) => {
+          const win = window as unknown as Record<string, unknown>;
+          const fetches = win.__aistudioFetches as Record<string, AbortController> | undefined;
+          fetches?.[id]?.abort();
+        }, requestId).catch(() => undefined);
+      };
+      signal?.addEventListener("abort", abortFetch, { once: true });
+      try {
+        return await page.evaluate(async (args) => {
+          const win = window as unknown as Record<string, unknown>;
+          const fetches = (win.__aistudioFetches ??= {}) as Record<string, AbortController>;
+          const controller = new AbortController();
+          fetches[args.requestId] = controller;
+          const timer = setTimeout(() => controller.abort(), args.timeoutMs);
+          try {
+            const response = await fetch(args.url, {
+              method: "POST",
+              credentials: "include",
+              headers: args.headers,
+              body: args.body,
+              signal: controller.signal,
+            });
+            return { status: response.status, body: await response.text() };
+          } finally {
+            clearTimeout(timer);
+            delete fetches[args.requestId];
+          }
+        }, { url: template.url, headers: template.headers, body, timeoutMs, requestId });
+      } catch (error) {
+        if (signal?.aborted) throw Object.assign(new Error("Native gateway request aborted"), { name: "AbortError" });
+        throw error;
+      } finally {
+        signal?.removeEventListener("abort", abortFetch);
+      }
     });
   }
 
@@ -256,6 +277,10 @@ export class NativeBrowserSession {
         await this.abortPageStream(page, requestId);
         throw new Error("AI Studio streaming request timed out");
       } finally {
+        // On the normal "done" path this abort is a no-op; on exception paths
+        // (onChunk throwing, parser errors) it stops the in-page fetch that
+        // would otherwise keep running until the timeout with no consumer.
+        await this.abortPageStream(page, requestId);
         await page.evaluate((id) => {
           const win = window as unknown as Record<string, unknown>;
           const streams = win.__aistudioStreams as Record<string, unknown> | undefined;

@@ -94,6 +94,7 @@ export interface InteractionCreateRequest {
   readonly store?: boolean;
   readonly system_instruction?: string;
   readonly tools?: readonly InteractionTool[];
+  readonly generation_config?: Record<string, JsonValue>;
 }
 
 export interface GeminiPart {
@@ -115,6 +116,7 @@ export interface GeminiGenerateRequest {
   readonly contents: readonly GeminiContent[];
   readonly systemInstruction?: GeminiContent;
   readonly tools?: readonly InteractionTool[];
+  readonly generationConfig?: Record<string, JsonValue>;
 }
 
 export interface ModelFunctionCall {
@@ -127,6 +129,7 @@ export interface ModelFunctionCall {
 export interface ModelOutput {
   readonly text?: string;
   readonly thinking?: string;
+  readonly thinking_signature?: string;
   readonly function_calls?: readonly ModelFunctionCall[];
   readonly images?: readonly ImageContent[];
   readonly audio?: readonly AudioContent[];

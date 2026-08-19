@@ -70,14 +70,19 @@ function hasFunctionResponse(contents: readonly AistudioContent[]): boolean {
 
 export function flattenFunctionContents(contents: readonly AistudioContent[]): AistudioContent[] {
   const lines: string[] = [];
+  const media: AistudioPart[] = [];
   for (const content of contents) {
     for (const part of content.parts) {
       if (part.functionCall) lines.push(`[assistant tool call: ${part.functionCall[0]}]\n${JSON.stringify(part.functionCall[1])}`);
       else if (part.functionResponse) lines.push(`[tool result: ${part.functionResponse[0]}]\n${JSON.stringify(part.functionResponse[1])}`);
       else if (part.text) lines.push(part.text);
+      // Media parts are not representable as text; keep them so the fallback
+      // replay does not silently drop images/audio/documents attached to the
+      // timeline (e.g. a user image sent after a tool exchange).
+      else if (part.inlineData || part.fileId) media.push(part);
     }
   }
-  return [{ role: "user", parts: [{ text: lines.join("\n\n") }] }];
+  return [{ role: "user", parts: [{ text: lines.join("\n\n") }, ...media] }];
 }
 
 export class NativeGateway {
@@ -100,8 +105,8 @@ export class NativeGateway {
     return models;
   }
 
-  async generate(model: string, body: unknown): Promise<Record<string, unknown>> {
-    return this.generateInternal(model, body);
+  async generate(model: string, body: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    return this.generateInternal(model, body, undefined, signal);
   }
 
   async generateStream(
@@ -146,7 +151,7 @@ export class NativeGateway {
       });
     };
     const replay = async (wireBody: string): Promise<{ status: number; body: string }> => {
-      if (!onResponse) return this.session.replay(wireBody);
+      if (!onResponse) return this.session.replay(wireBody, undefined, signal);
       const parser = new IncrementalAIStudioParser();
       return this.session.replayStream(wireBody, raw => {
         for (const chunk of parser.feed(raw)) {
@@ -165,9 +170,12 @@ export class NativeGateway {
     const effectiveTools = emulateMixedTools ? toolGroups.functions : normalized.tools;
     let response: { status: number; body: string };
     if (emulateMixedTools && !hasFunctionResponse(normalized.contents)) {
-      const builtinResponse = await this.session.replay(await makeBody(normalized.contents, toolGroups.builtins, false));
+      const builtinResponse = await this.session.replay(await makeBody(normalized.contents, toolGroups.builtins, false), undefined, signal);
       if (builtinResponse.status < 200 || builtinResponse.status >= 300) {
-        throw new Error(`AI Studio built-in tool phase returned HTTP ${builtinResponse.status}: ${builtinResponse.body.slice(0, 500)}`);
+        throw Object.assign(
+          new Error(`AI Studio built-in tool phase returned HTTP ${builtinResponse.status}: ${builtinResponse.body.slice(0, 500)}`),
+          { statusCode: builtinResponse.status },
+        );
       }
       const bridged = bridgeBuiltinResult(normalized.contents, parseAIStudioResponse(builtinResponse.body));
       response = await replay(await makeBody(bridged, toolGroups.functions, false));
@@ -199,7 +207,10 @@ export class NativeGateway {
       response = await replay(await makeBody(finalContents, null, true, true));
     }
     if (response.status < 200 || response.status >= 300) {
-      throw new Error(`AI Studio upstream returned HTTP ${response.status}: ${response.body.slice(0, 500)}`);
+      throw Object.assign(
+        new Error(`AI Studio upstream returned HTTP ${response.status}: ${response.body.slice(0, 500)}`),
+        { statusCode: response.status },
+      );
     }
     return toGeminiResponse(parseAIStudioResponse(response.body));
   }
