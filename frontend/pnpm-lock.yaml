@@ -27,8 +27,8 @@ importers:
         specifier: ^18.0.9
         version: 18.0.9
       naive-ui:
-        specifier: ^2.44.1
-        version: 2.44.1(vue@3.5.41(typescript@5.6.2))
+        specifier: ^2.45.2
+        version: 2.45.2(vue@3.5.41(typescript@5.6.2))
       vue:
         specifier: ^3.5.41
         version: 3.5.41(typescript@5.6.2)
@@ -810,6 +810,10 @@ packages:
     resolution: {integrity: sha512-Xwwo44whKBVCYoliBQwaPvtd/2tYFkRQtXDWj1nackaV2JPXx3L0+Jvd8/qCJ2p+ML0/XVkJ2q+Mr+UVdpJK5w==}
     engines: {node: '>=12.0.0'}
 
+  highlight.js@11.12.0:
+    resolution: {integrity: sha512-nbfWpyRMcMrPMmDwJB+dhX/eiaPKtc2RB+0QZskqJ3WjRA/FDS0e9hZrx8EC/lbEv8gXy98FcDbNa/dspAaJMg==}
+    engines: {node: '>=12.0.0'}
+
   import-meta-resolve@4.2.0:
     resolution: {integrity: sha512-Iqv2fzaTQN28s/FwZAoFq0ZSs/7hMAHJVX+w8PZl3cY19Pxk6jFFalxQoIfW2826i/fDLXv8IiEZRIT0lDuWcg==}
 
@@ -851,8 +855,8 @@ packages:
   muggle-string@0.4.1:
     resolution: {integrity: sha512-VNTrAak/KhO2i8dqqnqnAHOa3cYBwXEZe9h+D5h/1ZqFSTEFHdM65lR7RoIqq3tBBYavsOXV84NoHXZ0AkPyqQ==}
 
-  naive-ui@2.44.1:
-    resolution: {integrity: sha512-reo8Esw0p58liZwbUutC7meW24Xbn3EwNv91zReWKm2W4JPu+zfgJRn/F7aO0BFmvN+h2brA2M5lRvYqLq4kuA==}
+  naive-ui@2.45.2:
+    resolution: {integrity: sha512-KshetbFOX/uZ/Pe+60hJoUAo47x5QO1JpZaUVPQCQkNhFfJ7hKsX55A8oMFQHccEpLuQUMPkJ41cX94R4nWUjg==}
     engines: {node: '>=20'}
     peerDependencies:
       vue: ^3.0.0
@@ -1048,8 +1052,8 @@ packages:
       typescript:
         optional: true
 
-  vueuc@0.4.65:
-    resolution: {integrity: sha512-lXuMl+8gsBmruudfxnMF9HW4be8rFziylXFu1VHVNbLVhRTXXV4njvpRuJapD/8q+oFEMSfQMH16E/85VoWRyQ==}
+  vueuc@0.4.66:
+    resolution: {integrity: sha512-hHrZl+0AsrUvqYPBXSXQ2QaSrO3razjeUseLAhJWlOS/Hdfw/Y2MU05fOTP1qn1A3121gMxsHLaEz2V6CkWdTg==}
     peerDependencies:
       vue: ^3.0.11
 
@@ -1713,6 +1717,8 @@ snapshots:
 
   highlight.js@11.11.1: {}
 
+  highlight.js@11.12.0: {}
+
   import-meta-resolve@4.2.0: {}
 
   jiti@2.7.0: {}
@@ -1754,7 +1760,7 @@ snapshots:
 
   muggle-string@0.4.1: {}
 
-  naive-ui@2.44.1(vue@3.5.41(typescript@5.6.2)):
+  naive-ui@2.45.2(vue@3.5.41(typescript@5.6.2)):
     dependencies:
       '@css-render/plugin-bem': 0.15.14(css-render@0.15.14)
       '@css-render/vue3-ssr': 0.15.14(vue@3.5.41(typescript@5.6.2))
@@ -1766,7 +1772,7 @@ snapshots:
       date-fns: 4.4.0
       date-fns-tz: 3.2.0(date-fns@4.4.0)
       evtd: 0.2.4
-      highlight.js: 11.11.1
+      highlight.js: 11.12.0
       lodash: 4.18.1
       lodash-es: 4.18.1
       seemly: 0.3.10
@@ -1774,7 +1780,7 @@ snapshots:
       vdirs: 0.1.8(vue@3.5.41(typescript@5.6.2))
       vooks: 0.2.12(vue@3.5.41(typescript@5.6.2))
       vue: 3.5.41(typescript@5.6.2)
-      vueuc: 0.4.65(vue@3.5.41(typescript@5.6.2))
+      vueuc: 0.4.66(vue@3.5.41(typescript@5.6.2))
 
   nanoid@3.3.18: {}
 
@@ -1991,7 +1997,7 @@ snapshots:
     optionalDependencies:
       typescript: 5.6.2
 
-  vueuc@0.4.65(vue@3.5.41(typescript@5.6.2)):
+  vueuc@0.4.66(vue@3.5.41(typescript@5.6.2)):
     dependencies:
       '@css-render/vue3-ssr': 0.15.14(vue@3.5.41(typescript@5.6.2))
       '@juggle/resize-observer': 3.4.0
