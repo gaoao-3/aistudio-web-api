@@ -198,6 +198,25 @@ Client (Gemini SDK / WebUI / curl)
 >
 > **Live model catalog** — the logged-in AI Studio browser session supplies the credentials for model discovery and generation.
 
+---
+
+## 🐳 Docker Deployment
+
+A multi-stage `Dockerfile` and `docker-compose.yml` are included: the image builds the frontend, compiles the backend, and pre-downloads the CloakBrowser stealth Chromium, so the container needs no extra downloads on first start.
+
+```bash
+# Build and start (data persisted to ./data)
+docker compose up -d --build
+
+# Follow logs
+docker compose logs -f
+```
+
+> [!IMPORTANT]
+> The in-container browser needs a proxy to reach Google. Note that `127.0.0.1` inside the container is not the host: point `AISTUDIO_PROXY_URL` in `.env` to the **host's LAN IP** (with the proxy allowing LAN connections), or switch the service to `network_mode: host` and keep using `127.0.0.1`.
+
+First-time login works exactly like a local run: open `http://<host>:3006`, go to the Accounts page, and complete local login, remote assisted login, or cookie import. Account data persists via the `./data` volume.
+
 ## ❓ FAQ
 
 **Requests fail with `AI Studio streaming request failed: TypeError: Failed to fetch`?**

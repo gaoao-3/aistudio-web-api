@@ -1,0 +1,26 @@
+# 依赖与构建产物
+node_modules
+**/node_modules
+backend-ts/dist
+backend-ts/dist-smoke
+static
+frontend/dist
+
+# 运行数据与敏感信息（通过卷挂载注入，绝不进入镜像）
+data
+.env
+*.local
+
+# 版本控制与本地方便文件
+.git
+.gitignore
+.gitattributes
+.vscode
+docs
+.mindfs
+.pi
+.workflow
+*.log
+Dockerfile
+docker-compose.yml
+.dockerignore

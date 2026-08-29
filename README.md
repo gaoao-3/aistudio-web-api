@@ -433,6 +433,25 @@ Gemini 3 的无状态多轮请求必须保留模型返回的 `thought` 部分及
 
 ---
 
+## 🐳 Docker 部署
+
+项目提供多阶段 `Dockerfile` 和 `docker-compose.yml`：镜像内完成前端构建、后端编译，并预下载 CloakBrowser 隐身 Chromium，容器首启无需再联网下载浏览器。
+
+```bash
+# 构建并启动（数据持久化到 ./data）
+docker compose up -d --build
+
+# 查看日志
+docker compose logs -f
+```
+
+> [!IMPORTANT]
+> 容器内浏览器访问 Google 需要代理。注意容器里的 `127.0.0.1` 不是宿主机，请在 `.env` 中把 `AISTUDIO_PROXY_URL` 指向**宿主机局域网 IP** 加端口（并让代理允许局域网连接），或改用 `network_mode: host` 后继续使用 `127.0.0.1`。
+
+首次登录与本地运行一致：打开 `http://<宿主机>:3006` 的「账号」页面完成本机登录、远程辅助登录或 Cookie 导入，账号数据通过 `./data` 卷持久化。
+
+---
+
 ## 🛠️ 开发与验证
 
 ```bash

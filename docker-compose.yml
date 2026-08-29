@@ -1,0 +1,20 @@
+services:
+  aistudio-api:
+    build: .
+    container_name: aistudio-api
+    ports:
+      - "3006:3006"
+    env_file:
+      - .env
+    environment:
+      # 容器内浏览器访问 Google 需要代理；按需修改为你的代理地址
+      # 宿主机上的 127.0.0.1 在容器内不可达，应使用宿主机局域网 IP 或 host 网络模式
+      AISTUDIO_PROXY_URL: ${AISTUDIO_PROXY_URL:-}
+      AISTUDIO_BROWSER_HEADLESS: "1"
+      # 运行数据固定在 /app/data，与本地默认布局一致
+      AISTUDIO_RUNTIME_ROOT: /app
+    volumes:
+      - ./data:/app/data
+      # 可选：单独挂载 .env 到容器（不改动镜像）
+      - ./.env:/app/.env:ro
+    restart: unless-stopped
