@@ -67,6 +67,7 @@ interface PageStreamEvent {
   readonly status?: number;
   readonly text?: string;
   readonly message?: string;
+  readonly name?: string;
 }
 
 interface StorageState {
@@ -392,7 +393,8 @@ export class NativeBrowserSession {
       const page = await this.ensureBotGuard();
       const template = this.firstTemplate();
       const requestId = createHash("sha256").update(`${Date.now()}:${Math.random()}`).digest("hex").slice(0, 16);
-      await page.evaluate((args) => {
+      const startPageFetch = (): Promise<unknown> =>
+        page.evaluate((args) => {
         const win = window as unknown as Record<string, unknown>;
         const streams = (win.__aistudioStreams ??= {}) as Record<string, {
           controller: AbortController;
@@ -404,6 +406,7 @@ export class NativeBrowserSession {
           events: PageStreamEvent[];
           waiter: ((event: PageStreamEvent) => void) | null;
         } = { controller: new AbortController(), events: [], waiter: null };
+        delete streams[args.requestId];
         streams[args.requestId] = state;
         const push = (event: PageStreamEvent): void => {
           if (state.waiter) {
@@ -443,14 +446,16 @@ export class NativeBrowserSession {
             push({ type: "done" });
           } catch (error) {
             if (state.controller.signal.aborted) push({ type: "aborted" });
-            else push({ type: "error", message: String(error) });
+            else push({ type: "error", message: String(error), ...(error instanceof Error ? { name: error.name } : {}) });
           } finally {
             clearTimeout(timer);
           }
         })();
-      }, { requestId, url: template.url, headers: template.headers, body, timeoutMs });
+        }, { requestId, url: template.url, headers: template.headers, body, timeoutMs });
+      await startPageFetch();
 
       let status = 0;
+      let retriedNetworkError = false;
       let responseBody = "";
       const pending: string[] = [];
       const deadline = Date.now() + timeoutMs;
@@ -501,7 +506,27 @@ export class NativeBrowserSession {
           if (event.type === "aborted") {
             throw Object.assign(new Error("Native gateway request aborted"), { name: "AbortError" });
           }
-          throw new Error(`AI Studio streaming request failed: ${event.message ?? "unknown error"}`);
+          if (event.type === "error") {
+            const message = event.message ?? "unknown error";
+            const isNetworkError = message.includes("Failed to fetch")
+              || message.includes("Network request failed")
+              || event.name === "NetworkError";
+            if (isNetworkError && !retriedNetworkError && !signal?.aborted) {
+              // 网络级失败（代理抖动、连接被重置、模板凭据瞬时失效）重试一次，
+              // 避免把短暂抖动直接抛给客户端。
+              retriedNetworkError = true;
+              console.warn(`[browser-session] streaming fetch failed at network level, retrying once: ${message} (page=${page.url()})`);
+              status = 0;
+              responseBody = "";
+              pending.length = 0;
+              await this.abortPageStream(page, requestId);
+              await startPageFetch();
+              continue;
+            }
+            const online = await page.evaluate(() => navigator.onLine).catch(() => undefined);
+            console.error(`[browser-session] streaming request failed: ${message} (page=${page.url()}, online=${online}, name=${event.name ?? "n/a"})`);
+            throw new Error(`AI Studio streaming request failed: ${message}`);
+          }
         }
         await this.abortPageStream(page, requestId);
         throw new Error("AI Studio streaming request timed out");
