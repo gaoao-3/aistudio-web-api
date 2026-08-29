@@ -80,10 +80,21 @@ onMounted(async () => {
           <Icon name="tune" />
         </button>
         <ThemeSwitcher />
-        <div class="account-chip">
-          <span class="dot" :class="{ off: !activeAccount.id }"></span>
-          <span class="chip-label">{{ activeAccount.id ? (activeAccount.email || activeAccount.name || activeAccount.id) : '未登录账号' }}</span>
-        </div>
+        <v-menu location="bottom end">
+          <template #activator="{ props }">
+            <button class="account-chip" v-bind="props">
+              <span class="dot" :class="{ off: !activeAccount.id }"></span>
+              <span class="chip-label">{{ activeAccount.id ? (activeAccount.email || activeAccount.name || activeAccount.id) : '未登录账号' }}</span>
+            </button>
+          </template>
+          <v-card rounded="xl" min-width="160">
+            <v-card-text class="pa-2">
+              <button class="acct-menu-item" @click="logout()">
+                <Icon name="logout" :size="16" />退出登录
+              </button>
+            </v-card-text>
+          </v-card>
+        </v-menu>
       </header>
 
       <ChatView v-if="view === 'chat'" />
@@ -94,6 +105,18 @@ onMounted(async () => {
         <DashboardView v-else-if="view === 'dashboard'" />
         <SettingsView v-else-if="view === 'settings'" />
       </div>
+
+      <!-- 移动端底部导航（Material 3 Navigation Bar，桌面端隐藏） -->
+      <nav class="bottom-nav">
+        <button
+          v-for="n in NAV" :key="n.key"
+          class="bn-item" :class="{ active: view === n.key }"
+          @click="go(n.key)"
+        >
+          <span class="bn-icon"><Icon :name="n.icon" :size="20" /></span>
+          <span class="bn-label">{{ n.label }}</span>
+        </button>
+      </nav>
     </div>
   </div>
 </template>

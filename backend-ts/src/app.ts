@@ -9,13 +9,11 @@ import { NativeBackendBridge } from "./bridge/native-bridge.js";
 import { RuntimeConfigStore } from "./config/runtime-config.js";
 import { settings } from "./config.js";
 import { HttpError, errorDetail } from "./http/errors.js";
-import { InteractionStore } from "./interactions/store.js";
-import type { BuiltinToolName } from "./interactions/types.js";
+type BuiltinToolName = "google_search" | "code_execution" | "google_maps" | "url_context";
 
 interface AppServices {
   readonly bridge: BackendBridge;
   readonly apiKeys: ApiKeyStore;
-  readonly interactions: InteractionStore;
 }
 
 interface BuildAppOptions {
@@ -123,7 +121,6 @@ function isPublicRoute(method: string, url: string): boolean {
 async function sendStream(
   reply: FastifyReply,
   operation: (onChunk: (chunk: string) => void, signal: AbortSignal) => Promise<unknown>,
-  options: { readonly doneMarker?: boolean } = {},
 ): Promise<void> {
   const controller = new AbortController();
   const onClose = (): void => {
@@ -144,11 +141,9 @@ async function sendStream(
   } catch (error) {
     if (!reply.raw.destroyed && !reply.raw.writableEnded && (error as Error).name !== "AbortError") {
       const detail = error instanceof BridgeError ? error.detail : errorDetail(String(error), "server_error");
-      // The Gemini wire route must not emit event lines or [DONE] (its clients
-      // parse every data line as JSON); the Interactions route opts in.
-      const prefix = options.doneMarker ? "event: error\n" : "";
-      reply.raw.write(`${prefix}data: ${JSON.stringify({ error: detail })}\n\n`);
-      if (options.doneMarker) reply.raw.write("event: done\ndata: [DONE]\n\n");
+      // The Gemini wire route must not emit event lines or [DONE]; clients parse
+      // every data line as JSON and treat the natural stream end as completion.
+      reply.raw.write(`data: ${JSON.stringify({ error: detail })}\n\n`);
     }
   } finally {
     reply.raw.off("close", onClose);
@@ -159,12 +154,11 @@ async function sendStream(
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
   const bridge = options.services?.bridge ?? new NativeBackendBridge();
   const apiKeys = options.services?.apiKeys ?? new ApiKeyStore();
-  const interactions = options.services?.interactions ?? new InteractionStore();
   const requestContext = new WeakMap<object, { readonly webUi: boolean }>();
   const app = Fastify({ logger: options.logger ?? true, bodyLimit: settings.bodyLimitBytes });
   const runtimeConfig = new RuntimeConfigStore(options.runtimeConfigFile);
 
-  app.decorate("backendServices", { bridge, apiKeys, interactions });
+  app.decorate("backendServices", { bridge, apiKeys });
 
   app.setErrorHandler((error, _request, reply) => {
     if ((error as { code?: unknown }).code === "FST_ERR_CTP_BODY_TOO_LARGE") {
@@ -235,6 +229,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   app.get("/health", async () => bridge.request("health"));
   app.get("/stats", async () => bridge.request("stats"));
+  app.get("/logs", async (request) => {
+    const query = request.query as { limit?: string; before_id?: string };
+    return bridge.request("request_logs", {
+      limit: query.limit ? Number(query.limit) : undefined,
+      before_id: query.before_id ? Number(query.before_id) : undefined,
+    });
+  });
   app.get("/system/status", async () => ({
     server: "fastify",
     pid: process.pid,
@@ -325,6 +326,16 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   app.get<{ Params: { sessionId: string } }>("/accounts/login/status/:sessionId", async (request) => (
     bridge.request("login_status", { session_id: request.params.sessionId })
   ));
+  app.get<{ Params: { sessionId: string } }>("/accounts/login/screenshot/:sessionId", async (request) => (
+    bridge.request("login_screenshot", { session_id: request.params.sessionId })
+  ));
+  app.post("/accounts/login/click", async (request) => {
+    const body = bodyRecord(request.body);
+    if (typeof body.session_id !== "string" || typeof body.x !== "number" || typeof body.y !== "number") {
+      throw new HttpError(422, "session_id、x 和 y 格式无效");
+    }
+    return bridge.request("login_click", { session_id: body.session_id, x: body.x, y: body.y });
+  });
   app.post("/accounts/login/input", async (request) => {
     const body = bodyRecord(request.body);
     if (typeof body.session_id !== "string" || typeof body.value !== "string") {
@@ -338,6 +349,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   app.post<{ Params: { accountId: string } }>("/accounts/:accountId/refresh", async (request) => (
     bridge.request("accounts_refresh", { account_id: request.params.accountId })
   ));
+  app.post<{ Params: { accountId: string } }>("/accounts/:accountId/refresh-auth", async (request) => (
+    bridge.request("accounts_refresh_auth", { account_id: request.params.accountId })
+  ));
   app.post<{ Params: { accountId: string } }>("/accounts/:accountId/activate", async (request) => (
     bridge.request("accounts_activate", { account_id: request.params.accountId })
   ));
@@ -350,42 +364,6 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     bridge.request("accounts_delete", { account_id: request.params.accountId })
   ));
   app.post("/accounts/import-cookies", async (request) => bridge.request("import_cookies", bodyRecord(request.body)));
-
-  for (const version of ["v1", "v1beta", "v1beta2"] as const) {
-    app.post(`/${version}/interactions`, async (request, reply) => {
-      const body = stripBuiltinToolsForApi(requestContext.get(request)?.webUi === true, bodyRecord(request.body));
-      if (body.stream === true) {
-        // Validate before hijacking so 400/404 keep their real status codes.
-        await bridge.request("interaction_validate", { body });
-        await sendStream(reply, (onChunk, signal) => bridge.request("interaction_create", { body }, onChunk, signal), { doneMarker: true });
-        return;
-      }
-      return bridge.request("interaction_create", { body });
-    });
-    app.get(`/${version}/interactions`, async (request) => {
-      const query = isRecord(request.query) ? request.query : {};
-      const rawLimit = query.limit;
-      const limit = typeof rawLimit === "string" ? Number.parseInt(rawLimit, 10) : undefined;
-      if (limit !== undefined && (!Number.isInteger(limit) || limit < 0)) throw new HttpError(422, "limit 必须是非负整数");
-      const records = await interactions.list();
-      const selected = limit === undefined ? records : records.slice(0, limit);
-      return { object: "list", interactions: selected.map((record) => record.interaction ?? {}) };
-    });
-    app.get<{ Params: { interactionId: string } }>(`/${version}/interactions/:interactionId`, async (request) => {
-      const record = await interactions.get(request.params.interactionId);
-      if (!record) throw new HttpError(404, errorDetail(`Interaction not found: ${request.params.interactionId}`, "not_found"));
-      return record.interaction ?? {};
-    });
-    app.delete<{ Params: { interactionId: string } }>(`/${version}/interactions/:interactionId`, async (request, reply) => {
-      if (!await interactions.delete(request.params.interactionId)) {
-        throw new HttpError(404, errorDetail(`Interaction not found: ${request.params.interactionId}`, "not_found"));
-      }
-      reply.status(200).send();
-    });
-    app.post<{ Params: { interactionId: string } }>(`/${version}/interactions/:interactionId/cancel`, async () => {
-      throw new HttpError(400, errorDetail("cancel is only available for background interactions, which are not supported", "bad_request"));
-    });
-  }
 
   async function availableModels(): Promise<{
     readonly models: Record<string, unknown>[];
@@ -403,27 +381,32 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     return { models: FALLBACK_MODELS.map(modelCard), source: "fallback" };
   }
 
-  app.get("/v1beta/models", async () => availableModels());
-  app.get<{ Params: { "*": string } }>("/v1beta/models/*", async (request) => {
-    const id = request.params["*"].replace(/^models\//u, "");
-    const name = `models/${id}`;
-    const model = (await availableModels()).models.find((item) => item.name === name);
-    if (!model) throw new HttpError(404, errorDetail(`Model '${id}' not found`, "not_found"));
-    return model;
-  });
-  app.post<{ Params: { "*": string } }>("/v1beta/*", async (request, reply) => {
-    const target = request.params["*"];
-    const match = /^(.*):(generateContent|streamGenerateContent)$/u.exec(target);
-    if (!match?.[1] || !match[2]) throw new HttpError(404, errorDetail("Not Found", "not_found"));
-    const model = match[1];
-    const action = match[2];
-    const body = stripBuiltinToolsForApi(requestContext.get(request)?.webUi === true, bodyRecord(request.body));
-    if (action === "streamGenerateContent") {
-      await sendStream(reply, (onChunk, signal) => bridge.request("generate", { model, body, stream: true }, onChunk, signal));
-      return;
-    }
-    return bridge.request("generate", { model, body, stream: false });
-  });
+  for (const version of ["v1", "v1beta"] as const) {
+    app.get(`/${version}/models`, async () => availableModels());
+    app.get<{ Params: { "*": string } }>(`/${version}/models/*`, async (request) => {
+      const id = request.params["*"].replace(/^models\//u, "");
+      const name = `models/${id}`;
+      const model = (await availableModels()).models.find((item) => item.name === name);
+      if (!model) throw new HttpError(404, errorDetail(`Model '${id}' not found`, "not_found"));
+      return model;
+    });
+    app.post<{ Params: { "*": string } }>(`/${version}/*`, async (request, reply) => {
+      const target = request.params["*"];
+      const match = /^(.*):(generateContent|streamGenerateContent|countTokens)$/u.exec(target);
+      if (!match?.[1] || !match[2]) throw new HttpError(404, errorDetail("Not Found", "not_found"));
+      const model = match[1];
+      const action = match[2];
+      const body = stripBuiltinToolsForApi(requestContext.get(request)?.webUi === true, bodyRecord(request.body));
+      if (action === "countTokens") {
+        return bridge.request("countTokens", { model, body });
+      }
+      if (action === "streamGenerateContent") {
+        await sendStream(reply, (onChunk, signal) => bridge.request("generate", { model, body, stream: true }, onChunk, signal));
+        return;
+      }
+      return bridge.request("generate", { model, body, stream: false });
+    });
+  }
 
   app.addHook("onClose", async () => bridge.stop());
   await bridge.start();

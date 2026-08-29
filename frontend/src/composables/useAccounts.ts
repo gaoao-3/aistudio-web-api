@@ -29,6 +29,13 @@ interface ImportCookiesResponse {
   cookie_count?: number;
   detail?: unknown;
 }
+interface AuthRefreshResponse {
+  status?: Account['auth_state'];
+  pageUrl?: string;
+  message?: string;
+  cookie?: { checkedAt?: string; earliestExpiry?: string; expiringWithinDays?: number; criticalMissing?: string[] };
+  detail?: unknown;
+}
 
 const accounts = ref<Account[]>([]);
 const activeId = ref('');
@@ -43,6 +50,7 @@ const localLoginSessionId = ref('');
 const remoteLogin = ref<RemoteLoginState>({ open: false, sessionId: '', step: null, input: '', error: '', submitting: false, timer: null });
 const cookieModal = ref<CookieModalState>({ open: false, cookies: '', name: '', email: '', importing: false });
 const refreshingAccountId = ref('');
+const refreshingAuthAccountId = ref('');
 const profileRefreshInFlight = new Set<string>();
 let remotePollInFlight = false;
 let remotePollQueued = false;
@@ -105,6 +113,28 @@ export function useAccounts() {
     } finally {
       profileRefreshInFlight.delete(id);
       if (refreshingAccountId.value === id) refreshingAccountId.value = '';
+    }
+  }
+
+  async function refreshAccountAuth(id: string): Promise<void> {
+    if (!id || refreshingAuthAccountId.value) return;
+    refreshingAuthAccountId.value = id;
+    try {
+      const r = await apiFetch(`/accounts/${id}/refresh-auth`, { method: 'POST' });
+      const d = await r.json().catch(() => ({})) as AuthRefreshResponse;
+      if (!r.ok) {
+        toastErr(detailMessage(d.detail, '登录续活失败'));
+        return;
+      }
+      await Promise.all([loadAccounts(), loadRotation()]);
+      if (d.status === 'refreshed' || d.status === 'still_healthy') toastOk('Google 登录状态已续活');
+      else if (d.status === 'reauth_required') toastErr('Google 要求重新登录，请使用浏览器登录恢复账号');
+      else if (d.status === 'challenge_required') toastErr('Google 要求二次验证，请使用浏览器登录完成验证');
+      else toastErr(d.message || '登录续活失败');
+    } catch {
+      toastErr('登录续活请求失败');
+    } finally {
+      refreshingAuthAccountId.value = '';
     }
   }
 
@@ -387,9 +417,9 @@ export function useAccounts() {
   return {
     accounts, activeId, activeAccount, accountsLoading,
     rotationMode, rotCfg, rotationAccounts, accountRows,
-    loginInProgress, localLoginSessionId, remoteLogin, cookieModal, refreshingAccountId,
+    loginInProgress, localLoginSessionId, remoteLogin, cookieModal, refreshingAccountId, refreshingAuthAccountId,
     loadAccounts, loadRotation, saveRotation, forceNext, activateAccount, deleteAccount,
-    refreshAccountProfile, refreshStaleProfiles,
+    refreshAccountProfile, refreshAccountAuth, refreshStaleProfiles,
     addAccount, cancelLocalLogin,
     startRemoteLogin, pollRemoteLogin, submitRemoteInput, closeRemoteLogin, remoteStepIcon,
     importCookies,

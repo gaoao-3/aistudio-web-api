@@ -47,6 +47,8 @@ interface LoginSessionRecord {
 export interface LoginSessionBackend {
   start(input: { readonly name?: string; readonly remote: boolean }): Promise<{ session_id: string }>;
   status(sessionId: string): LoginSessionView | undefined;
+  screenshot(sessionId: string): Promise<{ readonly image: string; readonly width: number; readonly height: number } | "missing" | "not_ready">;
+  click(sessionId: string, xRatio: number, yRatio: number): Promise<"ok" | "missing" | "not_ready">;
   submit(sessionId: string, value: string): "ok" | "missing" | "not_waiting";
   cancel(sessionId: string): Promise<"ok" | "missing">;
   stop(): Promise<void>;
@@ -68,11 +70,13 @@ function isNavigationContextError(error: unknown): boolean {
 }
 
 export function loginPhaseFromUrl(url: string): string | undefined {
+  if (/^https:\/\/gds\.google\.com\/web\/(?:landing|recoveryoptions)(?:[/?#]|$)/iu.test(url)) return "selection";
   if (!url.includes("accounts.google.com")) return undefined;
   const known: readonly [string, string][] = [
     ["/v3/signin/identifier", "identifier"],
     ["/v3/signin/challenge/pwd", "pwd"],
     ["/v3/signin/challenge/dp", "dp"],
+    ["/v3/signin/challenge/recaptcha", "recaptcha"],
     ["/v3/signin/challenge/selection", "selection"],
     ["/v3/signin/challenge/totp", "totp"],
     ["/v3/signin/challenge/ootp", "ootp"],
@@ -82,6 +86,7 @@ export function loginPhaseFromUrl(url: string): string | undefined {
     ["/v3/signin/challenge/authzen", "authzen"],
     ["/v3/signin/challenge/pk", "passkey"],
     ["/v3/signin/challenge/webauthn", "webauthn"],
+    ["/v3/signin/speedbump/passkeyenrollment", "selection"],
   ];
   return known.find(([marker]) => url.includes(marker))?.[1];
 }
@@ -151,6 +156,27 @@ export class LoginSessionManager implements LoginSessionBackend {
   status(sessionId: string): LoginSessionView | undefined {
     const session = this.sessions.get(sessionId);
     return session ? publicSession(session) : undefined;
+  }
+
+  async screenshot(sessionId: string): Promise<{ readonly image: string; readonly width: number; readonly height: number } | "missing" | "not_ready"> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return "missing";
+    const page = session.context?.pages()[0];
+    if (!page || page.isClosed() || session.status !== "pending") return "not_ready";
+    const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+    const image = await page.screenshot({ type: "jpeg", quality: 65 });
+    return { image: `data:image/jpeg;base64,${image.toString("base64")}`, ...viewport };
+  }
+
+  async click(sessionId: string, xRatio: number, yRatio: number): Promise<"ok" | "missing" | "not_ready"> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return "missing";
+    const page = session.context?.pages()[0];
+    if (!page || page.isClosed() || session.status !== "pending") return "not_ready";
+    if (!Number.isFinite(xRatio) || !Number.isFinite(yRatio) || xRatio < 0 || xRatio > 1 || yRatio < 0 || yRatio > 1) return "not_ready";
+    const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+    await page.mouse.click(viewport.width * xRatio, viewport.height * yRatio);
+    return "ok";
   }
 
   submit(sessionId: string, value: string): "ok" | "missing" | "not_waiting" {
@@ -384,9 +410,9 @@ export class LoginSessionManager implements LoginSessionBackend {
             const rect = element.getBoundingClientRect();
             return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
           };
-          const target = [...document.querySelectorAll("button, [role='button']")]
+          const target = [...document.querySelectorAll("a, button, [role='link'], [role='button']")]
             .filter(visible)
-            .find(element => /try another way|use another|choose another|尝试其他方式|换一种方式|选择其他|改用其他/iu.test(element.textContent ?? ""));
+            .find(element => /try another way|use another|choose another|other sign-in|尝试其他方式|换一种方式|换个方式|选择其他|改用其他|其他登录方式|其他验证方式/iu.test(element.textContent ?? ""));
           target?.click();
           return Boolean(target);
         });

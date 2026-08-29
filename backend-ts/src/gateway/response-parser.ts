@@ -1,3 +1,5 @@
+import { densifySparseJSON } from "./sparse-json.js";
+
 interface ParsedPart {
   readonly text: string;
   readonly thought: boolean;
@@ -106,9 +108,9 @@ function responseChunks(outer: unknown): unknown[][] {
 
 function parseOuter(raw: string): unknown {
   const stripped = raw.trim().replace(/^\)\]\}'\s*/u, "");
-  try { return JSON.parse(stripped); } catch {
+  try { return JSON.parse(densifySparseJSON(stripped)); } catch {
     for (const line of stripped.split(/\r?\n/u)) {
-      try { return JSON.parse(line); } catch { /* continue */ }
+      try { return JSON.parse(densifySparseJSON(line)); } catch { /* continue */ }
     }
     throw new Error("AI Studio returned a non-JSON response");
   }

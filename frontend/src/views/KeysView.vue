@@ -1,7 +1,6 @@
 <script setup lang="ts">
 // API 密钥页
 import { onMounted } from 'vue';
-import { NAlert, NButton, NCard, NInput } from 'naive-ui';
 import Icon from '../components/Icon.vue';
 import { useKeys } from '../composables/useKeys';
 import { fmtDate } from '../utils';
@@ -25,30 +24,38 @@ function onDeleteKey(id: string): void {
     <div class="page-title">API 密钥</div>
     <div class="page-sub">创建后完整密钥仅显示一次，请立即复制保存。密钥仅用于 API 鉴权，内置原生工具只在 WebUI 会话中可用。</div>
 
-    <NCard size="small" class="mb-5">
-      <div class="flex gap-2 items-center flex-wrap">
-        <NInput
-          v-model:value="keyName" placeholder="密钥名称（如：我的手机）"
-          style="flex: 1; min-width: 180px" @keydown.enter="createKey()"
+    <v-card class="mb-5" rounded="xl">
+      <v-card-text class="flex gap-2 items-center flex-wrap">
+        <v-text-field
+          v-model="keyName" placeholder="密钥名称（如：我的手机）"
+          style="flex: 1; min-width: 180px" hide-details @keydown.enter="createKey()"
         />
-        <NButton type="primary" :loading="keyBusy" @click="createKey()">
-          <template #icon><Icon name="plus" :size="18" /></template>
+        <v-btn color="primary" :loading="keyBusy" @click="createKey()">
+          <template #prepend><Icon name="plus" :size="18" /></template>
           创建密钥
-        </NButton>
-      </div>
-    </NCard>
+        </v-btn>
+      </v-card-text>
+    </v-card>
 
-    <NAlert v-if="newKey" type="success" class="mb-5" title="创建成功，完整密钥仅显示这一次：">
+    <v-alert v-if="newKey" type="success" class="mb-5" title="创建成功，完整密钥仅显示这一次：">
       <div class="flex gap-2 items-center flex-wrap mt-2">
         <code class="flex-1 min-w-[200px] font-mono text-[13px] bg-surface-2 px-3 py-2 rounded-[10px] break-all">{{ newKey }}</code>
-        <NButton tertiary size="small" @click="copyNewKey()">
-          <template #icon><Icon :name="keyCopied ? 'check' : 'copy'" :size="15" /></template>
+        <v-btn variant="text" size="small" @click="copyNewKey()">
+          <template #prepend><Icon :name="keyCopied ? 'check' : 'copy'" :size="15" /></template>
           {{ keyCopied ? '已复制' : '复制' }}
-        </NButton>
+        </v-btn>
       </div>
-    </NAlert>
+    </v-alert>
 
-    <div v-if="keysLoading" class="empty-hint"><Icon name="loader" :size="18" class="spin" />加载中…</div>
+    <div v-if="keysLoading" class="skel-list">
+      <div v-for="i in 3" :key="i" class="skel-row">
+        <div class="skeleton skel-circle"></div>
+        <div class="skel-lines">
+          <div class="skeleton skel-line w60"></div>
+          <div class="skeleton skel-line w40"></div>
+        </div>
+      </div>
+    </div>
     <div v-else-if="!keys.length" class="empty-hint">还没有密钥。环境变量 AISTUDIO_API_KEY 配置的密钥不在这里显示。</div>
 
     <template v-else>

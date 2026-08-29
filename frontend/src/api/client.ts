@@ -1,12 +1,12 @@
 // ---------- API 访问层（从 app.ts 的 authHeaders/apiFetch 移植） ----------
-import { createDiscreteApi } from 'naive-ui';
+import { useToast } from '../composables/useToast';
 
 // 全局消息提示（不依赖组件上下文，composable 与视图中统一使用）
-const { message } = createDiscreteApi(['message']);
+const toast = useToast();
 
-export function toastOk(msg: string) { message.success(msg); }
-export function toastErr(msg: string) { message.error(msg); }
-export function toastInfo(msg: string) { message.info(msg); }
+export function toastOk(msg: string) { toast.ok(msg); }
+export function toastErr(msg: string) { toast.err(msg); }
+export function toastInfo(msg: string) { toast.info(msg); }
 
 export function authHeaders(headers: Record<string, string> = {}): Record<string, string> {
   const next = { ...headers };

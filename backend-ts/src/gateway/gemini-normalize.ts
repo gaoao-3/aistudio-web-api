@@ -1,3 +1,4 @@
+import { HttpError } from "../http/errors.js";
 import { buildToolsFromNames, type AistudioContent, type AistudioPart } from "./wire-codec.js";
 
 const SCHEMA_TYPES: Readonly<Record<string, number>> = {
@@ -89,9 +90,16 @@ export function encodeSchemaToWire(input: Record<string, unknown>, includeRequir
       .filter((entry): entry is [string, Record<string, unknown>] => isRecord(entry[1]))
       .map(([name, value]) => [name, encodeSchemaToWire(value, includeRequired)]);
   }
-  if (includeRequired && Array.isArray(schema.required)) {
-    while (wire.length <= 7) wire.push(null);
-    wire[7] = schema.required;
+  if (Array.isArray(schema.required)) {
+    if (includeRequired) {
+      while (wire.length <= 7) wire.push(null);
+      wire[7] = schema.required;
+    } else {
+      // AI Studio's Function declarations editor stores required property names
+      // in the schema ordering slot rather than the regular required slot.
+      while (wire.length <= 22) wire.push(null);
+      wire[22] = schema.required;
+    }
   }
   if (Array.isArray(schema.propertyOrdering)) {
     while (wire.length <= 22) wire.push(null);
@@ -137,7 +145,8 @@ function normalizePart(value: unknown): AistudioPart | undefined {
   if (isRecord(value.functionResponse)) {
     if (typeof value.functionResponse.name !== "string" || !value.functionResponse.name) throw new Error("functionResponse.name is required");
     const rawResponse = value.functionResponse.response;
-    const response = isRecord(rawResponse) ? rawResponse : { result: rawResponse };
+    // AI Studio's manual response editor wraps a scalar under the `response` key.
+    const response = isRecord(rawResponse) ? rawResponse : { response: rawResponse };
     const callId = typeof value.functionResponse.id === "string" ? value.functionResponse.id : undefined;
     return { functionResponse: callId ? [value.functionResponse.name, response, callId] : [value.functionResponse.name, response] };
   }
@@ -164,19 +173,25 @@ function normalizeContent(value: unknown, defaultRole: string): AistudioContent 
 function normalizeSafety(value: unknown): unknown[][] | null {
   if (value === undefined) return null;
   if (!Array.isArray(value)) throw new Error("safetySettings must be an array");
-  return value.map(item => {
+  const settings = value.flatMap(item => {
     if (!isRecord(item) || typeof item.category !== "string" || typeof item.threshold !== "string") {
       throw new Error("Invalid safetySettings entry");
     }
     const category = SAFETY_CATEGORIES[item.category.toUpperCase()];
     const threshold = SAFETY_THRESHOLDS[item.threshold.toUpperCase()];
-    if (!category || !threshold) throw new Error(`Unsupported safety setting: ${item.category}/${item.threshold}`);
-    return [null, null, category, threshold];
+    // AI Studio 浏览器会话只支持上表四类五档；其余类别（如 CIVIC_INTEGRITY）直接忽略而不是报错
+    if (!category || !threshold) return [];
+    return [[null, null, category, threshold]];
   });
+  return settings.length ? settings : null;
 }
 
-function normalizeThinking(value: unknown): unknown {
-  if (!isRecord(value)) return value;
+type NormalizedThinkingConfig = readonly [number, null, null, number] | readonly unknown[] | string | number | boolean | null;
+
+function normalizeThinking(value: unknown): NormalizedThinkingConfig {
+  if (Array.isArray(value)) return value;
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+  if (!isRecord(value)) throw new Error("thinkingConfig must be a JSON value or an object");
   const levels: Readonly<Record<string, number>> = { LOW: 1, MEDIUM: 2, HIGH: 3, MINIMAL: 4 };
   const raw = value.thinkingLevel ?? value.level ?? "HIGH";
   const level = typeof raw === "number" ? raw : levels[String(raw).toUpperCase()];
@@ -185,7 +200,14 @@ function normalizeThinking(value: unknown): unknown {
 }
 
 export function normalizeGeminiRequest(modelPath: string, body: unknown): NormalizedGeminiRequest {
-  if (!isRecord(body) || !Array.isArray(body.contents) || body.contents.length === 0) throw new Error("contents is required");
+  if (!isRecord(body)) throw new Error("contents is required");
+  if (body.cachedContent !== undefined) {
+    throw new HttpError(400, {
+      message: "cachedContent is not supported by the AI Studio browser-session gateway; use the official Gemini API for Context Cache",
+      type: "invalid_request_error",
+    });
+  }
+  if (!Array.isArray(body.contents) || body.contents.length === 0) throw new Error("contents is required");
   const model = modelPath.startsWith("models/") ? modelPath : `models/${modelPath}`;
   const contents = body.contents.map(item => normalizeContent(item, "user"));
   let capturePrompt = "你好";
@@ -232,6 +254,11 @@ export function normalizeGeminiRequest(modelPath: string, body: unknown): Normal
     || (model.slice("models/".length).toLowerCase().startsWith("gemini-3") && hasBuiltinTools && hasFunctionTools);
   const generationConfig: Record<string, unknown> = { ...rawGeneration };
   if (rawGeneration.thinkingConfig !== undefined) generationConfig.thinkingConfig = normalizeThinking(rawGeneration.thinkingConfig);
+  if (isRecord(rawGeneration.responseSchema)) {
+    // 结构化输出 schema 必须转为 wire 位置编码；required 走常规槽位（与函数声明不同）。
+    generationConfig.responseSchema = encodeSchemaToWire(rawGeneration.responseSchema, true);
+    if (generationConfig.responseMimeType === undefined) generationConfig.responseMimeType = "application/json";
+  }
   if (Array.isArray(rawGeneration.responseModalities)) {
     const modalities = new Set(rawGeneration.responseModalities.map(item => String(item).toUpperCase()));
     if (modalities.has("IMAGE")) generationConfig.imageOutputMode = modalities.has("TEXT") ? [2, 1] : [2];

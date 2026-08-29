@@ -1,9 +1,9 @@
 <script setup lang="ts">
 // 登录页（原 login.ts 移植）
 import { onMounted, ref } from 'vue';
-import { NAlert, NButton, NConfigProvider, NInput } from 'naive-ui';
-import { naiveThemeOverrides, applyPresetToCssVars } from './composables/useTheme';
+import { applyPresetToCssVars } from './composables/useTheme';
 import Icon from './components/Icon.vue';
+import ToastHost from './components/ToastHost.vue';
 
 const token = ref('');
 const error = ref('');
@@ -47,7 +47,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <n-config-provider :theme-overrides="naiveThemeOverrides" class="h-full">
+  <v-app class="h-full">
     <div class="h-full flex items-center justify-center overflow-y-auto">
       <div class="w-full max-w-[400px] bg-surface border border-border-soft rounded-[16px] px-10 py-11 animate-[fade-up_.3s_ease]">
         <div class="flex items-center gap-2 mb-7">
@@ -57,26 +57,27 @@ onMounted(() => {
         <h1 class="text-[24px] font-[650] text-text mb-2">欢迎回来</h1>
         <p class="text-muted text-[14px] mb-8">输入服务 Token，继续使用你的 AI Studio 工作台</p>
 
-        <NAlert v-if="error" type="error" class="mb-4">{{ error }}</NAlert>
+        <v-alert v-if="error" type="error" class="mb-4">{{ error }}</v-alert>
 
         <form @submit.prevent="handleLogin()">
           <div class="mb-6">
             <div class="field-label"><span>服务 Token</span></div>
-            <NInput
-              v-model:value="token" type="password" show-password-on="click"
+            <v-text-field
+              v-model="token" type="password"
               placeholder="粘贴 API Token" autofocus autocomplete="current-password"
             />
           </div>
-          <NButton
-            type="primary" attr-type="submit" block
+          <v-btn
+            color="primary" type="submit" block size="large"
             :loading="loading" :disabled="!token.trim()"
           >
             {{ loading ? '验证中…' : '登录' }}
-          </NButton>
+          </v-btn>
         </form>
 
         <p class="text-center mt-6 text-[12px] text-muted">Token 由服务端配置，仅保存在当前浏览器</p>
       </div>
     </div>
-  </n-config-provider>
+    <ToastHost />
+  </v-app>
 </template>

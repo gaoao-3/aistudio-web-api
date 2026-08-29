@@ -1,16 +1,20 @@
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { launchPersistentContext } from "cloakbrowser";
 import type { BrowserContext, Cookie, Page, Request } from "playwright-core";
 import { settings } from "../config.js";
 import { parseAccountProfileSnapshot, type AccountProfile } from "../accounts/account-profile.js";
 import { AI_STUDIO_URLS, DIALOG_CLEANUP_JS, GOOGLE_LOGIN_BOOTSTRAP_URL, INSTALL_HOOKS_JS } from "./hooks.js";
+import { cleanBrowserCaches } from "./browser-cache.js";
+import { AccountRuntimeLease } from "./account-runtime-lease.js";
 
 export interface CapturedTemplate {
   readonly url: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly body: string;
+  /** Account runtime timezone read from the capturing page. */
+  readonly timezone?: string;
 }
 
 export interface SnapshotContent {
@@ -18,7 +22,44 @@ export interface SnapshotContent {
     readonly text?: unknown;
     readonly inlineData?: { readonly data?: unknown } | readonly [unknown, unknown];
     readonly inline_data?: readonly unknown[];
+    readonly fileData?: { readonly fileUri?: unknown } | readonly unknown[];
+    readonly file_data?: { readonly file_uri?: unknown } | readonly unknown[];
   }[];
+}
+export type BrowserStartupStage =
+  | "idle"
+  | "launching"
+  | "navigating"
+  | "authenticated"
+  | "makersuite_ready"
+  | "hooks_installed"
+  | "botguard_ready"
+  | "healthy"
+  | "failed";
+
+export interface CookieHealth {
+  readonly criticalPresent: number;
+  readonly criticalMissing: readonly string[];
+  readonly persistentCookies: number;
+  readonly earliestExpiry?: string;
+  readonly expiringWithinDays?: number;
+  readonly checkedAt: string;
+}
+export type AuthRefreshStatus = "refreshed" | "still_healthy" | "reauth_required" | "challenge_required" | "refresh_failed";
+
+export interface AuthRefreshResult {
+  readonly status: AuthRefreshStatus;
+  readonly pageUrl: string;
+  readonly cookie?: CookieHealth;
+  readonly message?: string;
+}
+
+export interface BrowserSessionHealth {
+  readonly stage: BrowserStartupStage;
+  readonly pageUrl?: string;
+  readonly lastError?: string;
+  readonly cookie?: CookieHealth;
+  readonly updatedAt: string;
 }
 
 interface PageStreamEvent {
@@ -32,6 +73,8 @@ interface StorageState {
   readonly cookies?: Cookie[];
   readonly origins?: unknown[];
 }
+const CRITICAL_GOOGLE_COOKIES = ["SID", "SSID", "HSID", "APISID", "SAPISID", "__Secure-1PSID", "__Secure-3PSID"] as const;
+const COOKIE_SAVE_INTERVAL_MS = 15 * 60_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -42,8 +85,27 @@ function stableFingerprint(profileDir: string): number {
   return 10_000 + (Number.parseInt(prefix, 16) % 90_000);
 }
 
+export function isGenerateRequestUrl(rawUrl: string): boolean {
+  try {
+    const pathname = decodeURIComponent(new URL(rawUrl).pathname);
+    return pathname.includes("GenerateContent")
+      && !/(?:PerUserQuota|CountTokens|CountContentTokens)$/u.test(pathname);
+  } catch {
+    return false;
+  }
+}
+
 function isGenerateRequest(request: Request): boolean {
-  return request.url().includes("GenerateContent") && !request.url().includes("Count");
+  return isGenerateRequestUrl(request.url());
+}
+
+/** 模板体必须是可解析的 JSON 数组；页面出错时可能发出表单编码的错误上报请求（trace=Error%2...），不能收作模板。 */
+function isValidTemplateBody(body: string): boolean {
+  try {
+    return Array.isArray(JSON.parse(body));
+  } catch {
+    return false;
+  }
 }
 
 function sanitizedHeaders(headers: Readonly<Record<string, string>>): Record<string, string> {
@@ -57,24 +119,172 @@ export class NativeBrowserSession {
   private bootstrapTemplate: CapturedTemplate | undefined;
   private readonly templates = new Map<string, CapturedTemplate>();
   private serial = Promise.resolve();
+  private pendingOperations = 0;
+  private lastActiveAt = Date.now();
+  private idleTimer: NodeJS.Timeout | undefined;
   private authFile: string | undefined;
   private profileDir: string | undefined;
-
+  private seedAuthOnNextLaunch = false;
+  private health: BrowserSessionHealth = { stage: "idle", updatedAt: new Date().toISOString() };
+  private runtimeLease: AccountRuntimeLease | undefined;
+  private cookieHealth: CookieHealth | undefined;
+  private lastCookieSaveAt = 0;
   constructor(
     authFile = settings.authFile,
+    private readonly idleTimeoutMs = settings.browserIdleTimeoutMs,
   ) {
     this.authFile = authFile;
     this.profileDir = authFile ? join(dirname(authFile), "profile") : undefined;
   }
 
+  getHealth(): BrowserSessionHealth {
+    return { ...this.health, ...(this.cookieHealth ? { cookie: this.cookieHealth } : {}) };
+  }
+
+  private setHealth(stage: BrowserStartupStage, page?: Page, error?: unknown): void {
+    this.health = {
+      stage,
+      ...(page && !page.isClosed() ? { pageUrl: page.url() } : {}),
+      ...(error !== undefined ? { lastError: error instanceof Error ? error.message : String(error) } : {}),
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
   runExclusive<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.serial.then(operation, operation);
+    this.pendingOperations += 1;
+    this.cancelIdleClose();
+    const guarded = (): Promise<T> => this.withWatchdog(operation);
+    const result = this.serial.then(guarded, guarded);
     this.serial = result.then(() => undefined, () => undefined);
+    void result.finally(() => {
+      this.pendingOperations -= 1;
+      this.lastActiveAt = Date.now();
+      if (this.pendingOperations === 0) this.scheduleIdleClose();
+    }).catch(() => undefined);
     return result;
+  }
+
+  /**
+   * Browser operations can hang forever when the renderer freezes: the
+   * in-page fetch abort timer only runs while the page's event loop is
+   * alive, and Playwright's page.evaluate has no default timeout. Without
+   * a watchdog, one wedged page blocks this session's serial queue for
+   * every later request. Race each operation against a timeout; on expiry,
+   * force-close the browser so hung evaluate promises reject and the next
+   * queued operation starts on a fresh session.
+   */
+  private async withWatchdog<T>(operation: () => Promise<T>): Promise<T> {
+    const timeoutMs = settings.browserWatchdogTimeoutMs;
+    if (timeoutMs <= 0) return operation();
+    let timer: NodeJS.Timeout | undefined;
+    const expired: unique symbol = Symbol("browser-watchdog-expired");
+    const outcome = await Promise.race([
+      operation(),
+      new Promise<symbol>((resolve) => {
+        timer = setTimeout(() => resolve(expired), timeoutMs);
+        timer.unref();
+      }),
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+    if (outcome !== expired) return outcome as T;
+    await this.resetAfterWatchdog();
+    throw new Error(
+      `Browser session watchdog timed out after ${Math.round(timeoutMs / 1000)}s; the browser session was reset`,
+    );
+  }
+
+  private async resetAfterWatchdog(): Promise<void> {
+    try {
+      // closeUnlocked() detaches the context before awaiting its shutdown,
+      // so even a wedged browser process cannot block session recovery;
+      // the extra race guards against context.close() itself hanging.
+      await Promise.race([
+        this.closeUnlocked(),
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 15_000);
+          timer.unref();
+        }),
+      ]);
+    } catch {
+      // Recovery must never throw.
+    }
+  }
+
+  private cancelIdleClose(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = undefined;
+  }
+
+  private scheduleIdleClose(delayMs = this.idleTimeoutMs): void {
+    this.cancelIdleClose();
+    if (this.idleTimeoutMs <= 0 || this.pendingOperations > 0 || !this.context) return;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = undefined;
+      this.enqueueIdleClose();
+    }, Math.max(1, delayMs));
+    this.idleTimer.unref();
+  }
+
+  private enqueueIdleClose(): void {
+    const closeIfIdle = async (): Promise<void> => {
+      if (this.pendingOperations > 0 || !this.context) return;
+      const remainingMs = this.idleTimeoutMs - (Date.now() - this.lastActiveAt);
+      if (remainingMs > 0) {
+        this.scheduleIdleClose(remainingMs);
+        return;
+      }
+      await this.closeUnlocked();
+    };
+    const result = this.serial.then(closeIfIdle, closeIfIdle);
+    this.serial = result.then(() => undefined, () => undefined);
   }
 
   async warmup(): Promise<void> {
     await this.runExclusive(async () => { await this.ensureBotGuard(); });
+  }
+
+  async refreshAuth(): Promise<AuthRefreshResult> {
+    return this.runExclusive(async () => {
+      const context = await this.launchContextOnly().catch(() => undefined);
+      const page = this.page;
+      if (!context || !page || page.isClosed()) {
+        return { status: "refresh_failed", pageUrl: "", message: "Browser context could not be launched for authentication refresh" };
+      }
+      const serviceLoginUrl = "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Faistudio.google.com%2Fapp%2Fprompts%2Fnew_chat";
+      try {
+        this.setHealth("navigating", page);
+        await page.goto(serviceLoginUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+        await page.waitForTimeout(3_000);
+        const currentUrl = page.url();
+        if (currentUrl.includes("accounts.google.com")) {
+          const challenge = /challenge|speedbump|signin\/v2/iu.test(currentUrl);
+          this.setHealth("failed", page, challenge ? "Google account challenge is required" : "Google reauthentication is required");
+          return {
+            status: challenge ? "challenge_required" : "reauth_required",
+            pageUrl: currentUrl,
+            ...(this.cookieHealth ? { cookie: this.cookieHealth } : {}),
+          };
+        }
+        this.snapshotKey = undefined;
+        this.bootstrapTemplate = undefined;
+        this.templates.clear();
+        await this.openAIStudio(page);
+        await this.ensureBotGuardAttempt();
+        await this.saveCookies(true);
+        this.setHealth("healthy", page);
+        return { status: "refreshed", pageUrl: page.url(), ...(this.cookieHealth ? { cookie: this.cookieHealth } : {}) };
+      } catch (error) {
+        this.setHealth("failed", page, error);
+        await this.captureStartupDiagnostics(page, 5, error);
+        return {
+          status: "refresh_failed",
+          pageUrl: page.isClosed() ? "" : page.url(),
+          message: error instanceof Error ? error.message : String(error),
+          ...(this.cookieHealth ? { cookie: this.cookieHealth } : {}),
+        };
+      }
+    });
   }
 
   async captureTemplate(model: string): Promise<CapturedTemplate> {
@@ -87,10 +297,29 @@ export class NativeBrowserSession {
       const pieces: string[] = [];
       for (const content of contents) {
         for (const part of content.parts ?? []) {
-          if (part.text !== undefined) pieces.push(String(part.text));
-          if (Array.isArray(part.inlineData) && part.inlineData[1] !== undefined) pieces.push(String(part.inlineData[1]));
-          else if (part.inlineData && "data" in part.inlineData && part.inlineData.data !== undefined) pieces.push(String(part.inlineData.data));
-          if (part.inline_data?.[1] !== undefined) pieces.push(String(part.inline_data[1]));
+          // WAA proof 绑定整段 prompt 的 SHA-256；每个 part 必须占一个位置，
+          // function call/result、code、thought signature 等以空字符串占位。
+          if (part.text !== undefined) {
+            pieces.push(String(part.text));
+            continue;
+          }
+          const inlineData = Array.isArray(part.inlineData) ? part.inlineData[1]
+            : part.inlineData && "data" in part.inlineData ? part.inlineData.data
+            : part.inline_data?.[1];
+          if (inlineData !== undefined) {
+            pieces.push(String(inlineData));
+            continue;
+          }
+          const fileUri = Array.isArray(part.fileData) ? part.fileData[0]
+            : part.fileData && "fileUri" in part.fileData ? part.fileData.fileUri
+            : Array.isArray(part.file_data) ? part.file_data[0]
+            : part.file_data && "file_uri" in part.file_data ? part.file_data.file_uri
+            : undefined;
+          if (fileUri !== undefined) {
+            pieces.push(String(fileUri));
+            continue;
+          }
+          pieces.push("");
         }
       }
       const hash = createHash("sha256").update(pieces.join(" ")).digest("hex");
@@ -365,8 +594,93 @@ export class NativeBrowserSession {
     });
   }
 
+  async probeFunctionCallingUi(outputDir: string, model?: string): Promise<Record<string, unknown>> {
+    return this.runExclusive(async () => {
+      const page = await this.ensureBotGuard();
+      if (model) {
+        const url = new URL(page.url());
+        url.searchParams.set("model", model.replace(/^models\//u, ""));
+        await page.goto(url.toString(), { waitUntil: "domcontentloaded", timeout: 30_000 });
+        await page.locator("textarea").first().waitFor({ state: "attached", timeout: 60_000 });
+      }
+      await mkdir(outputDir, { recursive: true });
+      for (const toolId of ["searchAsAToolTooltip", "codeExecutionTooltip", "browseAsAToolTooltip", "googleMapsTooltip"]) {
+        const builtinToggle = page.locator(`[data-test-id="${toolId}"] button[role="switch"]`).first();
+        if (await builtinToggle.count() && await builtinToggle.getAttribute("aria-checked") === "true") {
+          await builtinToggle.click();
+          await page.waitForTimeout(300);
+        }
+      }
+      const container = page.locator('[data-test-id="functionCallingTooltip"]');
+      const toggle = container.locator('button[role="switch"]');
+      const editButton = page.locator('button.edit-function-declarations-button');
+      if (await toggle.count() && await toggle.first().isEnabled() && await toggle.first().getAttribute("aria-checked") !== "true") {
+        await toggle.first().click();
+        await page.waitForTimeout(500);
+      }
+      const result: Record<string, unknown> = {
+        url: page.url(),
+        containerCount: await container.count(),
+        toggleCount: await toggle.count(),
+        editButtonCount: await editButton.count(),
+        toggleChecked: await toggle.first().getAttribute("aria-checked").catch(() => null),
+        bodyTextPreview: (await page.locator("body").textContent().catch(() => ""))?.slice(0, 4_000) ?? "",
+      };
+      await page.screenshot({ path: join(outputDir, "page.png"), fullPage: true });
+      await writeFile(join(outputDir, "page.html"), await page.content(), "utf8");
+      if (await editButton.count() && await editButton.first().isEnabled()) {
+        await editButton.first().click();
+        await page.waitForTimeout(500);
+        const dialog = page.locator("mat-dialog-container").last();
+        result.dialogCount = await dialog.count();
+        const codeTab = dialog.locator('button[role="tab"]', { hasText: "Code Editor" });
+        if (await codeTab.count()) await codeTab.click();
+        await page.waitForTimeout(300);
+        const declarationInput = dialog.locator("textarea").first();
+        result.textareaCount = await declarationInput.count();
+        if (await declarationInput.count()) {
+          const declarations = [{
+            name: "get_weather",
+            description: "查询指定城市天气",
+            parameters: {
+              type: "object",
+              properties: { city: { type: "string", description: "城市名称" } },
+              required: ["city"],
+            },
+          }];
+          await declarationInput.evaluate((element, value) => {
+            const textarea = element as HTMLTextAreaElement;
+            textarea.value = value;
+            textarea.dispatchEvent(new Event("input", { bubbles: true }));
+            textarea.dispatchEvent(new Event("change", { bubbles: true }));
+          }, JSON.stringify(declarations, null, 2));
+          await dialog.locator('button[aria-label="Save the current function declarations"]').click();
+          await page.waitForTimeout(500);
+          const prompt = page.locator('textarea[aria-label="Enter a prompt"]').first();
+          await prompt.fill("必须调用 get_weather 查询上海天气，不要直接回答。");
+          const responsePromise = page.waitForResponse(response => isGenerateRequestUrl(response.url()), { timeout: 120_000 });
+          await prompt.focus();
+          await page.keyboard.press("Control+Enter");
+          const nativeResponse = await responsePromise;
+          result.nativeStatus = nativeResponse.status();
+          await writeFile(join(outputDir, "native-request.json"), nativeResponse.request().postData() ?? "", "utf8");
+          await writeFile(join(outputDir, "native-response.txt"), await nativeResponse.text(), "utf8");
+          await this.waitUntilIdle(page);
+          result.functionCallWidgets = await page.locator("ms-function-call, ms-function-call-chunk").count();
+          result.inputCountAfterCall = await page.locator("input, textarea").count();
+          await page.screenshot({ path: join(outputDir, "function-call.png"), fullPage: true });
+          await writeFile(join(outputDir, "function-call.html"), await page.content(), "utf8");
+        }
+        await page.screenshot({ path: join(outputDir, "dialog.png"), fullPage: true });
+        await writeFile(join(outputDir, "dialog.html"), await page.content(), "utf8");
+      }
+      return result;
+    });
+  }
+
   async close(): Promise<void> {
     await this.runExclusive(async () => this.closeUnlocked());
+    this.cancelIdleClose();
   }
 
   async switchAuth(authFile: string): Promise<void> {
@@ -374,6 +688,7 @@ export class NativeBrowserSession {
       await this.closeUnlocked();
       this.authFile = authFile;
       this.profileDir = join(dirname(authFile), "profile");
+      this.seedAuthOnNextLaunch = true;
       await this.ensureContext();
     });
   }
@@ -385,7 +700,14 @@ export class NativeBrowserSession {
     this.snapshotKey = undefined;
     this.bootstrapTemplate = undefined;
     this.templates.clear();
-    if (context) await context.close();
+    try {
+      if (context) await context.close();
+      if (this.profileDir) await cleanBrowserCaches(this.profileDir).catch(() => undefined);
+    } finally {
+      await this.runtimeLease?.release().catch(() => undefined);
+      this.runtimeLease = undefined;
+      this.setHealth("idle");
+    }
   }
 
   private async abortPageStream(page: Page, requestId: string): Promise<void> {
@@ -395,9 +717,12 @@ export class NativeBrowserSession {
     }, requestId).catch(() => undefined);
   }
 
-  private async ensureContext(): Promise<BrowserContext> {
+  private async launchContextOnly(): Promise<BrowserContext> {
     if (this.context && this.page && !this.page.isClosed()) return this.context;
     if (!this.profileDir) throw new Error("AISTUDIO_AUTH_FILE is required by the native browser gateway");
+    this.setHealth("launching");
+    this.runtimeLease ??= await AccountRuntimeLease.acquire(join(dirname(this.profileDir), "runtime.lock"));
+    await cleanBrowserCaches(this.profileDir).catch(() => undefined);
     const context = await launchPersistentContext({
       userDataDir: this.profileDir,
       headless: settings.browserHeadless,
@@ -413,18 +738,61 @@ export class NativeBrowserSession {
     this.context = context;
     this.page = context.pages()[0] ?? await context.newPage();
     await this.seedFreshProfile(context);
-    await this.openAIStudio(this.page);
     return context;
+  }
+
+  private async ensureContext(): Promise<BrowserContext> {
+    if (this.context && this.page && !this.page.isClosed() && this.snapshotKey) return this.context;
+    const context = await this.launchContextOnly();
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const page = attempt === 0 ? context.pages()[0] ?? await context.newPage() : await context.newPage();
+      this.page = page;
+      try {
+        await this.openAIStudio(page);
+        this.setHealth("healthy", page);
+        return context;
+      } catch (error) {
+        lastError = error;
+        this.setHealth("failed", page, error);
+        await this.captureStartupDiagnostics(page, attempt + 1, error);
+        await page.close().catch(() => undefined);
+        if (this.page === page) this.page = undefined;
+      }
+    }
+    await this.closeUnlocked().catch(() => undefined);
+    this.setHealth("failed", undefined, lastError);
+    throw new Error(`Failed to initialize AI Studio after rebuilding the page once: ${String(lastError)}`);
+  }
+
+  private async captureStartupDiagnostics(page: Page, attempt: number, error: unknown): Promise<void> {
+    if (!this.authFile) return;
+    const outputDir = join(dirname(this.authFile), "startup-diagnostics");
+    await mkdir(outputDir, { recursive: true }).catch(() => undefined);
+    const bodyPreview = await page.locator("body").innerText({ timeout: 2_000 }).catch(() => "");
+    const diagnostic = {
+      attempt,
+      stage: this.health.stage,
+      url: page.isClosed() ? undefined : page.url(),
+      error: error instanceof Error ? error.message : String(error),
+      bodyPreview: bodyPreview.slice(0, 2_000),
+      capturedAt: new Date().toISOString(),
+    };
+    await writeFile(join(outputDir, `attempt-${attempt}.json`), JSON.stringify(diagnostic, null, 2), "utf8").catch(() => undefined);
+    if (!page.isClosed()) {
+      await page.screenshot({ path: join(outputDir, `attempt-${attempt}.png`), fullPage: true, timeout: 5_000 }).catch(() => undefined);
+    }
   }
 
   private async seedFreshProfile(context: BrowserContext): Promise<void> {
     if (!this.authFile) return;
     const existing = await context.cookies();
-    if (existing.length > 0) return;
+    if (existing.length > 0 && !this.seedAuthOnNextLaunch) return;
     try {
       const parsed: unknown = JSON.parse(await readFile(this.authFile, "utf8"));
       if (!isRecord(parsed) || !Array.isArray(parsed.cookies) || parsed.cookies.length === 0) return;
       await context.addCookies(parsed.cookies as Cookie[]);
+      this.seedAuthOnNextLaunch = false;
       const page = this.page ?? await context.newPage();
       await page.goto(GOOGLE_LOGIN_BOOTSTRAP_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
       await page.waitForTimeout(3_000);
@@ -437,10 +805,13 @@ export class NativeBrowserSession {
     let lastError: unknown;
     for (const url of AI_STUDIO_URLS) {
       try {
+        this.setHealth("navigating", page);
         await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
         if (page.url().includes("accounts.google.com")) throw new Error("Google cookies are expired");
+        this.setHealth("authenticated", page);
         await page.waitForFunction(() => Boolean((window as unknown as Record<string, unknown>).default_MakerSuite), undefined, { timeout: 60_000 });
         await page.locator("textarea").first().waitFor({ state: "attached", timeout: 60_000 });
+        this.setHealth("makersuite_ready", page);
         await this.saveCookies();
         await this.installHooks(page);
         return;
@@ -454,9 +825,13 @@ export class NativeBrowserSession {
   private async installHooks(page: Page): Promise<void> {
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const result = await page.evaluate(INSTALL_HOOKS_JS) as unknown;
-      if (result === "already_hooked") return;
+      if (result === "already_hooked") {
+        this.setHealth("hooks_installed", page);
+        return;
+      }
       if (typeof result === "string" && result.startsWith("hooked:")) {
         this.snapshotKey = result.slice("hooked:".length);
+        this.setHealth("hooks_installed", page);
         return;
       }
       await page.waitForTimeout(2_000);
@@ -465,18 +840,44 @@ export class NativeBrowserSession {
   }
 
   private async ensureBotGuard(): Promise<Page> {
+    try {
+      return await this.ensureBotGuardAttempt();
+    } catch (error) {
+      const failedPage = this.page;
+      if (failedPage) await this.captureStartupDiagnostics(failedPage, 3, error);
+      await failedPage?.close().catch(() => undefined);
+      const context = this.context;
+      if (!context) throw error;
+      const rebuiltPage = await context.newPage();
+      this.page = rebuiltPage;
+      try {
+        await this.openAIStudio(rebuiltPage);
+        return await this.ensureBotGuardAttempt();
+      } catch (retryError) {
+        this.setHealth("failed", rebuiltPage, retryError);
+        await this.captureStartupDiagnostics(rebuiltPage, 4, retryError);
+        throw new Error(`Failed to initialize AI Studio BotGuard after rebuilding the page once: ${String(retryError)}`);
+      }
+    }
+  }
+
+  private async ensureBotGuardAttempt(): Promise<Page> {
     await this.ensureContext();
     const page = this.page;
     if (!page) throw new Error("Native browser page is unavailable");
     await this.installHooks(page);
     const ready = await page.evaluate(() => Boolean((window as unknown as Record<string, unknown>).__bg_service));
-    if (ready) return page;
+    if (ready) {
+      this.setHealth("botguard_ready", page);
+      await this.saveCookies();
+      return page;
+    }
 
     let captured: CapturedTemplate | undefined;
     const onRequest = (request: Request): void => {
       if (captured || !isGenerateRequest(request)) return;
       const body = request.postData();
-      if (body) captured = { url: request.url(), headers: sanitizedHeaders(request.headers()), body };
+      if (body && isValidTemplateBody(body)) captured = { url: request.url(), headers: sanitizedHeaders(request.headers()), body };
     };
     page.on("request", onRequest);
     const textarea = page.locator("textarea").first();
@@ -489,7 +890,9 @@ export class NativeBrowserSession {
       await page.keyboard.press("Control+Enter");
       await page.waitForFunction(() => Boolean((window as unknown as Record<string, unknown>).__bg_service), undefined, { timeout: 45_000 });
       await this.waitUntilIdle(page);
-      if (captured) this.bootstrapTemplate = captured;
+      if (captured) this.bootstrapTemplate = await this.withTimezone(page, captured);
+      this.setHealth("botguard_ready", page);
+      await this.saveCookies();
       return page;
     } finally {
       page.off("request", onRequest);
@@ -499,17 +902,28 @@ export class NativeBrowserSession {
 
   private async captureTemplateUnlocked(model: string): Promise<CapturedTemplate> {
     const cached = this.templates.get(model);
-    if (cached) return cached;
+    if (cached) {
+      // 自愈：坏模板（历史版本可能缓存过错误上报请求体）丢弃后重新捕获
+      if (isValidTemplateBody(cached.body)) return cached;
+      this.templates.delete(model);
+    }
     const page = await this.ensureBotGuard();
-    if (this.bootstrapTemplate) {
-      this.templates.set(model, this.bootstrapTemplate);
-      return this.bootstrapTemplate;
+    const modelId = model.replace(/^models\//u, "");
+    const currentUrl = new URL(page.url());
+    if (currentUrl.searchParams.get("model") !== modelId) {
+      currentUrl.searchParams.set("model", modelId);
+      await page.goto(currentUrl.toString(), { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await page.locator("textarea").first().waitFor({ state: "attached", timeout: 60_000 });
+      await page.waitForTimeout(1_000);
     }
     let captured: CapturedTemplate | undefined;
     const onRequest = (request: Request): void => {
+      if (process.env.AISTUDIO_DEBUG_CAPTURE === "1" && /Generate|Stream|Count|Quota/iu.test(request.url())) {
+        console.error(`[capture] ${request.method()} ${request.url()} body=${request.postData()?.slice(0, 80) ?? ""}`);
+      }
       if (captured || !isGenerateRequest(request)) return;
       const body = request.postData();
-      if (body && body.length > 100) captured = { url: request.url(), headers: sanitizedHeaders(request.headers()), body };
+      if (body && body.length > 100 && isValidTemplateBody(body)) captured = { url: request.url(), headers: sanitizedHeaders(request.headers()), body };
     };
     page.on("request", onRequest);
     const textarea = page.locator("textarea").first();
@@ -520,14 +934,32 @@ export class NativeBrowserSession {
       await page.keyboard.press("Control+Enter");
       const deadline = Date.now() + 30_000;
       while (!captured && Date.now() < deadline) await page.waitForTimeout(250);
-      if (!captured) throw new Error(`Timed out capturing GenerateContent template for ${model}`);
+      if (!captured) {
+        if (process.env.AISTUDIO_DEBUG_CAPTURE === "1" && this.authFile) {
+          const debugDir = dirname(this.authFile);
+          await page.screenshot({ path: join(debugDir, "capture-timeout.png"), fullPage: true }).catch(() => undefined);
+          await writeFile(join(debugDir, "capture-timeout.html"), await page.content(), "utf8").catch(() => undefined);
+        }
+        throw new Error(`Timed out capturing GenerateContent template for ${model}`);
+      }
       await this.waitUntilIdle(page);
-      this.templates.set(model, captured);
-      return captured;
+      const template = await this.withTimezone(page, captured);
+      this.templates.set(model, template);
+      return template;
     } finally {
       page.off("request", onRequest);
       await textarea.fill(original).catch(() => undefined);
     }
+  }
+
+  private async pageTimezone(page: Page): Promise<string | undefined> {
+    const timezone = await page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone).catch(() => undefined);
+    return typeof timezone === "string" && timezone ? timezone : undefined;
+  }
+
+  private async withTimezone(page: Page, captured: CapturedTemplate): Promise<CapturedTemplate> {
+    const timezone = await this.pageTimezone(page);
+    return timezone ? { ...captured, timezone } : captured;
   }
 
   private firstTemplate(): CapturedTemplate {
@@ -544,9 +976,28 @@ export class NativeBrowserSession {
     }, undefined, { timeout: 60_000 });
   }
 
-  private async saveCookies(): Promise<void> {
+  private async saveCookies(force = false): Promise<void> {
     if (!this.authFile || !this.context) return;
-    const state: StorageState = { cookies: await this.context.cookies(), origins: [] };
-    await writeFile(this.authFile, JSON.stringify(state, null, 2), "utf8");
+    const now = Date.now();
+    if (!force && now - this.lastCookieSaveAt < COOKIE_SAVE_INTERVAL_MS) return;
+    const cookies = await this.context.cookies();
+    const names = new Set(cookies.map(cookie => cookie.name));
+    const expiries = cookies.map(cookie => cookie.expires).filter(expires => expires > 0);
+    const earliestExpirySeconds = expiries.length > 0 ? Math.min(...expiries) : undefined;
+    this.cookieHealth = {
+      criticalPresent: CRITICAL_GOOGLE_COOKIES.filter(name => names.has(name)).length,
+      criticalMissing: CRITICAL_GOOGLE_COOKIES.filter(name => !names.has(name)),
+      persistentCookies: expiries.length,
+      ...(earliestExpirySeconds !== undefined ? {
+        earliestExpiry: new Date(earliestExpirySeconds * 1_000).toISOString(),
+        expiringWithinDays: Math.max(0, Math.floor((earliestExpirySeconds * 1_000 - now) / 86_400_000)),
+      } : {}),
+      checkedAt: new Date(now).toISOString(),
+    };
+    const state: StorageState = { cookies, origins: [] };
+    const temporary = `${this.authFile}.${process.pid}.tmp`;
+    await writeFile(temporary, JSON.stringify(state, null, 2), "utf8");
+    await rename(temporary, this.authFile);
+    this.lastCookieSaveAt = now;
   }
 }

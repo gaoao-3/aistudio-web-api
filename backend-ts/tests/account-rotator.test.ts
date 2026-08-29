@@ -58,6 +58,22 @@ describe("account rotation", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it("prefers an available account with a warm browser", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aistudio-rotator-warm-"));
+    try {
+      const store = await makeStore(directory);
+      const accounts = await store.list();
+      const warm = accounts[1];
+      assert.ok(warm);
+      const rotator = new AccountRotator(store, "round_robin", 60);
+      const selected = await rotator.getNextAccount(undefined, new Set([warm.id]));
+      assert.equal(selected?.id, warm.id);
+      if (selected) rotator.recordSuccess(selected.id);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("cooldown waiting", () => {
@@ -82,4 +98,90 @@ describe("cooldown waiting", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+});
+
+describe("permission denied combos", () => {
+  it("skips the denied account-model combo but keeps other models eligible", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aistudio-rotator-denied-"));
+    try {
+      const store = await makeStore(directory);
+      const rotator = new AccountRotator(store, "round_robin", 0);
+      const first = await rotator.getNextAccount(undefined, undefined, undefined, "gemini-2.5-pro");
+      assert.ok(first);
+      await rotator.recordDenied(first.id, "models/gemini-2.5-pro");
+      assert.equal(rotator.isDenied(first.id, "gemini-2.5-pro"), true);
+
+      const second = await rotator.getNextAccount(undefined, undefined, undefined, "gemini-2.5-pro");
+      assert.ok(second);
+      assert.notEqual(second.id, first.id);
+      rotator.recordSuccess(second.id);
+
+      // 同一账号换个模型仍可被选中
+      const other = await rotator.getNextAccount(undefined, undefined, new Set([second!.id]), "gemini-3-flash-preview");
+      assert.equal(other?.id, first.id);
+      rotator.recordSuccess(first.id);
+
+      const stats = await rotator.getAllStats();
+      assert.deepEqual(stats[first.id]?.denied_models, ["gemini-2.5-pro"]);
+
+      // 全部账号被该模型拒绝时不再返回账号
+      await rotator.recordDenied(second!.id, "gemini-2.5-pro");
+      const none = await rotator.getNextAccount(undefined, undefined, undefined, "gemini-2.5-pro");
+      assert.equal(none, undefined);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("persists denied combos and resetAccount clears them", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aistudio-rotator-denied-persist-"));
+    try {
+      const store = await makeStore(directory);
+      const rotator = new AccountRotator(store, "round_robin", 0);
+      const first = await rotator.getNextAccount();
+      assert.ok(first);
+      await rotator.recordDenied(first.id, "gemini-2.5-pro");
+
+      // 模拟重启：新 rotator 从磁盘恢复
+      const restored = new AccountRotator(store, "round_robin", 0);
+      restored.setDenied(await store.deniedModels());
+      assert.equal(restored.isDenied(first.id, "gemini-2.5-pro"), true);
+
+      // 重新登录 / 导入 Cookie 后恢复资格
+      await restored.resetAccount(first.id);
+      assert.equal(restored.isDenied(first.id, "gemini-2.5-pro"), false);
+      assert.deepEqual(await store.deniedModels(), {});
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies upstream 403 permission errors", async () => {
+    const { isPermissionDeniedError } = await import("../src/accounts/account-rotator.js");
+    assert.equal(isPermissionDeniedError(new Error('AI Studio upstream returned HTTP 403: [,[7,"The caller does not have permission"]]')), true);
+    assert.equal(isPermissionDeniedError(new Error("AI Studio upstream returned HTTP 429: quota exceeded")), false);
+    assert.equal(isPermissionDeniedError(new Error("Google cookies are expired")), false);
+  });
+});
+
+it("least_rl incorporates recent latency without ignoring concurrent load", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "aistudio-rotator-health-"));
+  try {
+    const store = await makeStore(directory);
+    const accounts = await store.list();
+    const slow = accounts[0];
+    const fast = accounts[1];
+    assert.ok(slow && fast);
+    const rotator = new AccountRotator(store, "least_rl", 0);
+    rotator.recordSuccess(slow.id, 2_000);
+    rotator.recordSuccess(fast.id, 100);
+    const selected = await rotator.getNextAccount();
+    assert.equal(selected?.id, fast.id);
+    const stats = await rotator.getAllStats();
+    assert.equal(stats[fast.id]?.latency_ewma_ms, 100);
+    assert.equal(stats[fast.id]?.in_flight, 1);
+    if (selected) rotator.recordSuccess(selected.id, 200);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 // 输入区：自适应高度、多媒体附件（按钮/粘贴/拖拽）、模型快选、发送/停止
 import { computed, nextTick, ref, watch } from 'vue';
-import { NSelect } from 'naive-ui';
 import Icon from './Icon.vue';
 import { useChat } from '../composables/useChat';
 import { model, models } from '../composables/useCache';
@@ -17,7 +16,7 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const attachMenuOpen = ref(false);
 const dragover = ref(false);
 
-const modelOptions = computed(() => models.value.map(m => ({ label: m.id, value: m.id })));
+const modelOptions = computed(() => models.value.map(m => ({ title: m.id, value: m.id })));
 
 function resizeTa(): void {
   const el = ta.value;
@@ -93,10 +92,10 @@ watch(focusTick, () => nextTick(() => ta.value?.focus()));
         </button>
       </div>
       <div class="composer-row">
-        <n-select
+        <v-select
           v-if="modelOptions.length"
-          v-model:value="model" :options="modelOptions" size="small"
-          class="model-quick" :consistent-menu-width="false"
+          v-model="model" :items="modelOptions"
+          class="model-quick" density="compact" variant="plain" hide-details
         />
         <textarea
           ref="ta" v-model="draft" placeholder="输入提示词…" rows="1"
@@ -123,19 +122,23 @@ watch(focusTick, () => nextTick(() => ta.value?.focus()));
 
 <style scoped>
 .model-quick {
-  width: 150px;
+  width: 170px;
+  flex-shrink: 0;
+  margin-bottom: 2px;
 }
-.model-quick :deep(.n-base-selection) {
-  --n-border: 1px solid transparent !important;
-  --n-border-hover: 1px solid transparent !important;
-  --n-border-active: 1px solid transparent !important;
-  --n-border-focus: 1px solid transparent !important;
-  --n-box-shadow-active: none !important;
-  --n-box-shadow-focus: none !important;
-}
-.model-quick :deep(.n-base-selection-label) {
+.model-quick :deep(.v-field) {
   background: var(--primary-container);
   border-radius: 8px;
+  color: var(--primary-bright);
+  font-size: 12px;
+  font-family: var(--mono);
+  --v-field-padding-start: 10px;
+  --v-field-padding-end: 4px;
+}
+.model-quick :deep(.v-field__input) {
+  padding-top: 5px;
+  padding-bottom: 5px;
+  min-height: 30px;
   color: var(--primary-bright);
 }
 </style>

@@ -10,11 +10,13 @@
     "smoke:native-browser": "tsx scripts/native-browser-smoke.ts",
     "smoke:native-generate": "tsx scripts/native-generate-smoke.ts",
     "smoke:native-mixed-tools": "tsx scripts/native-mixed-tools-smoke.ts",
+    "smoke:native-protocol": "tsc -p tsconfig.smoke.json && node dist-smoke/scripts/native-protocol-smoke.js",
+    "capture:function-tool": "tsx scripts/capture-function-tool.ts",
     "test": "tsx --import ./tests/setup-runtime.ts --test tests/**/*.test.ts"
   },
   "dependencies": {
     "@fastify/static": "^10.1.3",
-    "cloakbrowser": "^0.5.6",
+    "cloakbrowser": "^0.5.8",
     "dotenv": "^17.2.1",
     "fastify": "^5.4.0",
     "playwright-core": "^1.62.1",

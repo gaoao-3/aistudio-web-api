@@ -25,6 +25,7 @@ export interface Message {
   images?: string[];
   attachments?: Attachment[];
   thinking?: string;
+  thinkingSignature?: string;
   showThinking?: boolean;
   toolCalls?: ToolCall[];
   error?: string;
@@ -33,6 +34,29 @@ export interface Message {
 export type OnOff = 'on' | 'off';
 
 export type BuiltinToolName = 'google_search' | 'code_execution' | 'google_maps' | 'url_context';
+
+export interface NativePart {
+  text?: string;
+  thought?: boolean;
+  thoughtSignature?: string;
+  inlineData?: { mimeType: string; data: string };
+  fileData?: { fileUri: string; mimeType?: string };
+  functionCall?: { name: string; args?: unknown; id?: string };
+  functionResponse?: { name: string; response?: unknown; id?: string };
+}
+
+export interface NativeContent {
+  role: 'user' | 'model';
+  parts: NativePart[];
+}
+
+export interface NativeGenerateRequest {
+  contents: NativeContent[];
+  systemInstruction?: NativeContent;
+  tools?: Record<string, unknown>[];
+  safetySettings?: Record<string, string>[];
+  generationConfig?: Record<string, unknown>;
+}
 
 export interface RunConfig {
   thinking: string;
@@ -64,6 +88,41 @@ export interface ModelStat {
 
 export type Stats = Record<string, ModelStat>;
 
+/** 精确响应缓存统计（与后端 ExactResponseCacheStats 对应） */
+export interface CacheStats {
+  enabled: boolean;
+  entries: number;
+  totalBytes: number;
+  maxBytes: number;
+  ttlSeconds: number;
+  hits: number;
+  misses: number;
+  stores: number;
+  skippedStores: number;
+  expirations: number;
+  evictions: number;
+  hitRate: number;
+  /** 在途去重命中数（相同请求并发时共享上游结果，bridge 级计数） */
+  dedupedHits?: number;
+}
+
+/** 单次 API 请求明细（与后端 RequestLogRow 对应） */
+export interface RequestLog {
+  id: number;
+  created_at: number;
+  kind: 'generate';
+  model: string;
+  account?: string | null;
+  status: 'success' | 'rate_limited' | 'error';
+  latency_ms: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cache: 'hit' | 'dedup' | 'miss' | 'bypass';
+  attempts: number;
+  error?: string | null;
+}
+
 /** 按天用量（与后端 DailyUsage 对应，date 为 UTC YYYY-MM-DD） */
 export interface DailyModelUsage {
   requests?: number;
@@ -86,6 +145,13 @@ export interface Account {
   membership_next_at_kind?: 'renewal' | 'expiry' | null;
   profile_updated_at?: string | null;
   profile_error?: string | null;
+  auth_state?: 'unknown' | 'healthy' | 'refreshing' | 'refreshed' | 'still_healthy' | 'reauth_required' | 'challenge_required' | 'refresh_failed';
+  cookie_checked_at?: string | null;
+  cookie_saved_at?: string | null;
+  earliest_cookie_expiry?: string | null;
+  last_auth_refresh_at?: string | null;
+  last_auth_refresh_error?: string | null;
+  reauth_url?: string | null;
   created_at?: string;
   success?: number;
   rate_limited?: number;
@@ -95,6 +161,9 @@ export interface Account {
   is_available?: boolean;
   cooldown_remaining?: number;
   last_rate_limited?: string | null;
+  auth_expired?: number;
+  last_auth_expired?: string | null;
+  auth_expired_active?: boolean;
   [key: string]: unknown;
 }
 
@@ -103,30 +172,11 @@ export interface RotationConfig {
   cooldown: number;
 }
 
-export interface StepContent {
-  type: string;
-  text?: string;
-  data?: string;
-  uri?: string;
-  mime_type?: string;
-}
-
-export interface InteractionStep {
-  type: string;
-  id?: string;
-  name?: string;
-  arguments?: unknown;
-  signature?: string;
-  content?: StepContent[];
-  summary?: StepContent[];
-}
-
-export interface HistoryItem {
-  id: string;
-  model?: string;
-  created?: string;
-  status?: string;
-  steps?: InteractionStep[];
+export interface LocalConversation {
+  id: 'current';
+  model: string;
+  updated_at: string;
+  messages: Message[];
 }
 
 export type LoginStepKind = 'email' | 'password' | 'otp' | 'selection' | 'manual';
@@ -217,16 +267,6 @@ export interface ApiKey {
   last_used?: string;
 }
 
-/** POST /v1beta/interactions 请求体 */
-export interface InteractionRequest {
-  model: string;
-  input: InteractionStep[];
-  store: boolean;
-  generation_config?: Record<string, unknown>;
-  stream?: boolean;
-  tools?: { type: BuiltinToolName | 'function' }[];
-  safety_settings?: { category: string; threshold: string }[];
-}
 
 /** Alpine 魔术属性（x-data 方法内通过 this 访问） */
 export interface AlpineMagics {

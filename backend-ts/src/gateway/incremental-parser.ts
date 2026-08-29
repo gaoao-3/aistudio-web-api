@@ -1,3 +1,5 @@
+import { densifySparseJSON } from "./sparse-json.js";
+
 const XSSI_PREFIX = ")]}'";
 
 /** Extracts the depth-3 response chunks from AI Studio's streamed JSON envelope. */
@@ -54,7 +56,7 @@ export class IncrementalAIStudioParser {
           if (this.depth === 2 && this.chunkStart !== undefined) {
             const raw = this.buffer.slice(this.chunkStart, this.position + 1);
             try {
-              const parsed: unknown = JSON.parse(raw);
+              const parsed: unknown = JSON.parse(densifySparseJSON(raw));
               if (Array.isArray(parsed)) chunks.push(parsed);
             } catch {
               // A malformed upstream chunk is ignored just like the legacy parser.

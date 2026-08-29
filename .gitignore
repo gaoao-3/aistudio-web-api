@@ -17,3 +17,5 @@ scripts/
 frontend/node_modules/
 node_modules/
 static/
+# 后端 smoke 测试编译产物
+backend-ts/dist-smoke/

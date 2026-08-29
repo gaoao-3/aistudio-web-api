@@ -5,6 +5,18 @@ import { settings } from "../config.js";
 import { AsyncMutex, readJsonFile, writeJsonFile } from "../storage/atomic-json.js";
 import { isGenericProfileLabel, type AccountProfile, type AccountTier, type MembershipDateKind } from "./account-profile.js";
 
+export type AccountAuthState = "unknown" | "healthy" | "refreshing" | "refreshed" | "still_healthy" | "reauth_required" | "challenge_required" | "refresh_failed";
+
+export interface AccountAuthSnapshot {
+  readonly state: AccountAuthState;
+  readonly cookieCheckedAt?: string;
+  readonly cookieSavedAt?: string;
+  readonly earliestCookieExpiry?: string;
+  readonly lastRefreshAt?: string;
+  readonly lastRefreshError?: string | null;
+  readonly reauthUrl?: string | null;
+}
+
 export interface AccountMeta {
   readonly id: string;
   name: string;
@@ -17,6 +29,13 @@ export interface AccountMeta {
   membership_next_at_kind: MembershipDateKind | null;
   profile_updated_at: string | null;
   profile_error: string | null;
+  auth_state: AccountAuthState;
+  cookie_checked_at: string | null;
+  cookie_saved_at: string | null;
+  earliest_cookie_expiry: string | null;
+  last_auth_refresh_at: string | null;
+  last_auth_refresh_error: string | null;
+  reauth_url: string | null;
   readonly created_at: string;
   last_used: string | null;
 }
@@ -87,10 +106,12 @@ export class AccountStore {
   private readonly mutex = new AsyncMutex();
   private readonly registryPath: string;
   private readonly rotationPath: string;
+  private readonly deniedPath: string;
 
   constructor(private readonly accountsDir = settings.accountsDir) {
     this.registryPath = join(accountsDir, "registry.json");
     this.rotationPath = join(accountsDir, "rotation.json");
+    this.deniedPath = join(accountsDir, "denied-models.json");
   }
 
   async list(): Promise<AccountMeta[]> {
@@ -151,6 +172,28 @@ export class AccountStore {
     });
   }
 
+  async updateAuthState(id: string, snapshot: AccountAuthSnapshot): Promise<AccountMeta | undefined> {
+    return this.mutex.run(async () => {
+      const registry = await this.load();
+      const account = registry.accounts[id];
+      if (!account) return undefined;
+      const next: AccountMeta = {
+        ...account,
+        auth_state: snapshot.state,
+        cookie_checked_at: snapshot.cookieCheckedAt ?? account.cookie_checked_at,
+        cookie_saved_at: snapshot.cookieSavedAt ?? account.cookie_saved_at,
+        earliest_cookie_expiry: snapshot.earliestCookieExpiry ?? account.earliest_cookie_expiry,
+        last_auth_refresh_at: snapshot.lastRefreshAt ?? account.last_auth_refresh_at,
+        last_auth_refresh_error: snapshot.lastRefreshError === undefined ? account.last_auth_refresh_error : snapshot.lastRefreshError,
+        reauth_url: snapshot.reauthUrl === undefined ? account.reauth_url : snapshot.reauthUrl,
+      };
+      registry.accounts[id] = next;
+      await writeJsonFile(join(this.accountsDir, id, "meta.json"), next);
+      await this.save(registry);
+      return next;
+    });
+  }
+
   async delete(id: string): Promise<boolean> {
     if (!safeId(id)) return false;
     return this.mutex.run(async () => {
@@ -187,6 +230,13 @@ export class AccountStore {
         membership_next_at_kind: old?.membership_next_at_kind ?? null,
         profile_updated_at: old?.profile_updated_at ?? null,
         profile_error: null,
+        auth_state: "healthy",
+        cookie_checked_at: now,
+        cookie_saved_at: now,
+        earliest_cookie_expiry: old?.earliest_cookie_expiry ?? null,
+        last_auth_refresh_at: old?.last_auth_refresh_at ?? null,
+        last_auth_refresh_error: null,
+        reauth_url: null,
         created_at: old?.created_at ?? now,
         last_used: now,
       };
@@ -228,6 +278,13 @@ export class AccountStore {
         membership_next_at_kind: existing?.membership_next_at_kind ?? null,
         profile_updated_at: existing?.profile_updated_at ?? null,
         profile_error: null,
+        auth_state: "healthy",
+        cookie_checked_at: now,
+        cookie_saved_at: now,
+        earliest_cookie_expiry: existing?.earliest_cookie_expiry ?? null,
+        last_auth_refresh_at: existing?.last_auth_refresh_at ?? null,
+        last_auth_refresh_error: null,
+        reauth_url: null,
         created_at: existing?.created_at ?? now,
         last_used: now,
       };
@@ -257,6 +314,23 @@ export class AccountStore {
     await writeJsonFile(this.rotationPath, config);
   }
 
+  /** 上游 403 Code 7 的 账号×模型 拒绝记录；重新登录或导入 Cookie 后由调用方清除。 */
+  async deniedModels(): Promise<Record<string, string[]>> {
+    const value = record(await readJsonFile(this.deniedPath));
+    if (!value) return {};
+    const result: Record<string, string[]> = {};
+    for (const [accountId, models] of Object.entries(value)) {
+      if (!safeId(accountId) || !Array.isArray(models)) continue;
+      const list = [...new Set(models.filter((item): item is string => typeof item === "string" && item.length > 0))];
+      if (list.length > 0) result[accountId] = list;
+    }
+    return result;
+  }
+
+  async saveDeniedModels(value: Record<string, string[]>): Promise<void> {
+    await writeJsonFile(this.deniedPath, value);
+  }
+
   private async load(): Promise<Registry> {
     const value = record(await readJsonFile(this.registryPath));
     const rawAccounts = record(value?.accounts) ?? {};
@@ -282,6 +356,14 @@ export class AccountStore {
         // Older registries have no membership snapshot; make the UI refresh them once after upgrade.
         profile_updated_at: hasMembershipSnapshot && typeof item.profile_updated_at === "string" ? item.profile_updated_at : null,
         profile_error: typeof item.profile_error === "string" ? item.profile_error : null,
+        auth_state: ["healthy", "refreshing", "refreshed", "still_healthy", "reauth_required", "challenge_required", "refresh_failed"].includes(String(item.auth_state))
+          ? item.auth_state as AccountAuthState : "unknown",
+        cookie_checked_at: typeof item.cookie_checked_at === "string" ? item.cookie_checked_at : null,
+        cookie_saved_at: typeof item.cookie_saved_at === "string" ? item.cookie_saved_at : null,
+        earliest_cookie_expiry: typeof item.earliest_cookie_expiry === "string" ? item.earliest_cookie_expiry : null,
+        last_auth_refresh_at: typeof item.last_auth_refresh_at === "string" ? item.last_auth_refresh_at : null,
+        last_auth_refresh_error: typeof item.last_auth_refresh_error === "string" ? item.last_auth_refresh_error : null,
+        reauth_url: typeof item.reauth_url === "string" ? item.reauth_url : null,
         created_at: typeof item.created_at === "string" ? item.created_at : new Date(0).toISOString(),
         last_used: typeof item.last_used === "string" ? item.last_used : null,
       };

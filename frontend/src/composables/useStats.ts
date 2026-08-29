@@ -1,10 +1,11 @@
 // ---------- 用量统计（汇总 + 按天趋势） ----------
 import { computed, ref } from 'vue';
 import { apiFetch } from '../api/client';
-import type { DailyUsage, Stats } from '../types';
+import type { CacheStats, DailyUsage, Stats } from '../types';
 
 const stats = ref<Stats>({});
 const daily = ref<DailyUsage>({});
+const cache = ref<CacheStats | null>(null);
 const loading = ref(false);
 const error = ref('');
 const lastLoadedAt = ref<Date | null>(null);
@@ -14,13 +15,20 @@ export interface TrendDay {
   prompt: number;
   completion: number;
   total: number;
+  requests: number;
+  modelCount: number;
+}
+
+export interface DailySummary extends TrendDay {
+  average: number;
 }
 
 /** 兼容旧数据中同一模型同时带/不带 models/ 前缀的情况。 */
 function normalizeStats(source: Stats): Stats {
   const normalized: Stats = {};
   for (const [rawName, value] of Object.entries(source)) {
-    const name = rawName.replace(/^models\//u, '');
+    const name = rawName.replace(/^models\//u, '').trim();
+    if (!name) continue;
     const existing = normalized[name] || {};
     const existingDate = existing.last_used ? Date.parse(existing.last_used) : 0;
     const valueDate = value.last_used ? Date.parse(value.last_used) : 0;
@@ -56,9 +64,10 @@ export function useStats() {
     try {
       const r = await apiFetch('/stats');
       if (!r.ok) throw new Error(`stats request failed: ${r.status}`);
-      const d = await r.json() as { models?: Stats; daily?: DailyUsage };
+      const d = await r.json() as { models?: Stats; daily?: DailyUsage; cache?: CacheStats };
       stats.value = normalizeStats(d.models || {});
       daily.value = d.daily || {};
+      cache.value = d.cache ?? null;
       lastLoadedAt.value = new Date();
     } catch (e) {
       error.value = '统计数据暂时无法加载，请稍后重试。';
@@ -80,25 +89,59 @@ export function useStats() {
     return Math.round(totalSuccess.value / total * 100) + '%';
   });
 
-  /** 今日（UTC）token 合计 */
-  const todayTokens = computed(() => {
-    const today = new Date().toISOString().slice(0, 10);
-    const bucket = daily.value[today] || {};
-    return Object.values(bucket).reduce((s, v) => s + (v.total_tokens || 0), 0);
-  });
+  const averageTokensPerRequest = computed(() =>
+    totalReqs.value > 0 ? Math.round(totalTokens.value / totalReqs.value) : 0,
+  );
+
+  const activeDays = computed(() => Object.values(daily.value).filter(bucket =>
+    Object.values(bucket).some(value => (value.requests || 0) > 0 || (value.total_tokens || 0) > 0),
+  ).length);
+
+  function summarizeDay(date: string): DailySummary {
+    const bucket = daily.value[date] || {};
+    let prompt = 0;
+    let completion = 0;
+    let total = 0;
+    let requests = 0;
+    let modelCount = 0;
+    for (const value of Object.values(bucket)) {
+      const hasUsage = (value.requests || 0) > 0 || (value.total_tokens || 0) > 0;
+      if (hasUsage) modelCount += 1;
+      requests += value.requests || 0;
+      prompt += value.prompt_tokens || 0;
+      completion += value.completion_tokens || 0;
+      total += value.total_tokens || 0;
+    }
+    return {
+      date,
+      prompt,
+      completion,
+      total,
+      requests,
+      modelCount,
+      average: requests > 0 ? Math.round(total / requests) : 0,
+    };
+  }
+
+  const todaySummary = computed(() => summarizeDay(new Date().toISOString().slice(0, 10)));
+  const todayTokens = computed(() => todaySummary.value.total);
+  const todayRequests = computed(() => todaySummary.value.requests);
+
+  /** 近 n 天每日汇总（缺失日期补 0） */
+  function dailySummary(n: number): DailySummary[] {
+    return lastNDays(n).map(summarizeDay);
+  }
 
   /** 近 n 天趋势（缺失日期补 0） */
   function trendDays(n: number): TrendDay[] {
-    return lastNDays(n).map(date => {
-      const bucket = daily.value[date] || {};
-      let prompt = 0, completion = 0, total = 0;
-      for (const v of Object.values(bucket)) {
-        prompt += v.prompt_tokens || 0;
-        completion += v.completion_tokens || 0;
-        total += v.total_tokens || 0;
-      }
-      return { date, prompt, completion, total };
-    });
+    return dailySummary(n).map(({ date, prompt, completion, total, requests, modelCount }) => ({
+      date,
+      prompt,
+      completion,
+      total,
+      requests,
+      modelCount,
+    }));
   }
 
   /** 模型 token 占比（降序） */
@@ -112,6 +155,7 @@ export function useStats() {
   return {
     stats,
     daily,
+    cache,
     loading,
     error,
     lastLoadedAt,
@@ -124,7 +168,12 @@ export function useStats() {
     totalCompletionTokens,
     totalTokens,
     successRate,
+    averageTokensPerRequest,
+    activeDays,
+    todaySummary,
     todayTokens,
+    todayRequests,
+    dailySummary,
     trendDays,
     modelShare,
   };

@@ -10,7 +10,6 @@ import { ApiKeyStore } from "../src/auth/api-key-store.js";
 import { buildApp } from "../src/app.js";
 import type { BackendBridge } from "../src/bridge/backend-bridge.js";
 import { settings } from "../src/config.js";
-import { InteractionStore } from "../src/interactions/store.js";
 
 class MockBridge implements BackendBridge {
   readonly calls: Array<{ method: string; params: Readonly<Record<string, unknown>> }> = [];
@@ -32,10 +31,6 @@ class MockBridge implements BackendBridge {
     if (method === "stats") return { models: {}, totals: { requests: 0 } } as T;
     if (method === "models") return this.modelCatalog as T;
     if (method === "generate") return { candidates: [{ content: { role: "model", parts: [{ text: "ok" }] } }] } as T;
-    if (method === "interaction_create") {
-      if (onChunk) onChunk("data: [DONE]\n\n");
-      return { id: "int_mock", status: "completed", steps: [] } as T;
-    }
     return { ok: true } as T;
   }
 }
@@ -49,10 +44,10 @@ class AbortBridge extends MockBridge {
     onChunk?: (chunk: string) => void,
     signal?: AbortSignal,
   ): Promise<T> {
-    if (method !== "interaction_create" || !onChunk || !signal) {
+    if (method !== "generate" || !onChunk || !signal) {
       return super.request(method, params, onChunk, signal);
     }
-    onChunk("data: {\"event_type\":\"interaction.created\"}\n\n");
+    onChunk("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\n\n");
     return new Promise<T>((_resolve, reject) => {
       signal.addEventListener("abort", () => {
         this.aborted = true;
@@ -67,14 +62,13 @@ class AbortBridge extends MockBridge {
 async function fixture(bridge = new MockBridge()) {
   const directory = await mkdtemp(join(tmpdir(), "aistudio-fastify-"));
   const apiKeys = new ApiKeyStore(join(directory, "apikeys.json"));
-  const interactions = new InteractionStore(join(directory, "interactions"), 0);
   const app = await buildApp({
-    services: { bridge, apiKeys, interactions },
+    services: { bridge, apiKeys },
     logger: false,
     serveStatic: false,
     runtimeConfigFile: join(directory, ".env"),
   });
-  return { app, bridge, apiKeys, interactions, directory };
+  return { app, bridge, apiKeys, directory };
 }
 
 test("health is public and served by the bridge", async (t) => {
@@ -290,16 +284,6 @@ test("API keys do not configure built-in tools; native tools are WebUI-only", as
   const localFunctionCall = [...state.bridge.calls].reverse().find((call) => call.method === "generate");
   assert.equal(((localFunctionCall?.params.body as { tools?: unknown[] } | undefined)?.tools || []).length, 1);
 
-  const deniedInteraction = await state.app.inject({
-    method: "POST",
-    url: "/v1beta/interactions",
-    headers,
-    payload: { model: "gemini-3-flash-preview", input: "run code", tools: [{ type: "code_execution" }] },
-  });
-  assert.equal(deniedInteraction.statusCode, 200);
-  const interactionCall = [...state.bridge.calls].reverse().find((call) => call.method === "interaction_create");
-  assert.deepEqual((interactionCall?.params.body as { tools?: unknown[] } | undefined)?.tools, []);
-
   const deniedPermissionUpdate = await state.app.inject({
     method: "PUT",
     url: `/api-keys/${createdBody.id}`,
@@ -348,33 +332,16 @@ test("independent Embedding endpoints are not exposed", async (t) => {
   assert.equal(openai.statusCode, 404);
   assert.equal(state.bridge.calls.length, 0);
 });
-
-test("accepts an Interactions request above Fastify's default 1 MiB limit", async (t) => {
+test("Interactions endpoints are not exposed", async (t) => {
   const state = await fixture();
   t.after(async () => { await state.app.close(); await rm(state.directory, { recursive: true, force: true }); });
-  const text = "x".repeat(1_100_000);
-  const response = await state.app.inject({
-    method: "POST",
-    url: "/v1beta/interactions",
-    payload: { model: "gemini-3-flash-preview", input: [{ type: "user_input", content: [{ type: "text", text }] }], store: false },
-  });
-  assert.equal(response.statusCode, 200);
-  assert.equal(state.bridge.calls.at(-1)?.method, "interaction_create");
-});
-
-test("Interactions history is read from the TypeScript store", async (t) => {
-  const state = await fixture();
-  t.after(async () => { await state.app.close(); await rm(state.directory, { recursive: true, force: true }); });
-  await state.interactions.save("int_1", {
-    interaction: {
-      id: "int_1",
-      created: "2026-08-09T00:00:00Z",
-      steps: [{ type: "user_input", content: [{ type: "text", text: "hello" }] }],
-    },
-  });
-  const response = await state.app.inject({ method: "GET", url: "/v1beta/interactions?limit=1" });
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.json().interactions[0].id, "int_1");
+  for (const version of ["v1", "v1beta", "v1beta2"] as const) {
+    for (const method of ["GET", "POST", "DELETE"] as const) {
+      const response = await state.app.inject({ method, url: `/${version}/interactions` });
+      assert.equal(response.statusCode, 404);
+    }
+  }
+  assert.equal(state.bridge.calls.length, 0);
 });
 
 test("disconnecting an SSE client aborts the bridge request", async (t) => {
@@ -384,7 +351,6 @@ test("disconnecting an SSE client aborts the bridge request", async (t) => {
     services: {
       bridge,
       apiKeys: new ApiKeyStore(join(directory, "apikeys.json")),
-      interactions: new InteractionStore(join(directory, "interactions"), 0),
     },
     logger: false,
     serveStatic: false,
@@ -398,7 +364,7 @@ test("disconnecting an SSE client aborts the bridge request", async (t) => {
       host: "127.0.0.1",
       port: address.port,
       method: "POST",
-      path: "/v1beta/interactions",
+      path: "/v1beta/models/gemini-3-flash-preview:streamGenerateContent",
       headers: { "content-type": "application/json" },
     }, (response) => {
       response.once("data", () => {
@@ -410,7 +376,7 @@ test("disconnecting an SSE client aborts the bridge request", async (t) => {
       if ((error as NodeJS.ErrnoException).code === "ECONNRESET") resolve();
       else reject(error);
     });
-    request.end(JSON.stringify({ model: "gemini-3-flash-preview", input: "hello", stream: true }));
+    request.end(JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hello" }] }] }));
   });
 
   await delay(50);

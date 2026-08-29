@@ -1,5 +1,3 @@
-export type WireValue = unknown;
-
 export interface AistudioPart {
   readonly text?: string | null;
   readonly inlineData?: readonly [string, string];
@@ -31,6 +29,10 @@ export interface RewriteWireOptions {
   readonly sanitizePlainText?: boolean;
   readonly safetyOff?: boolean;
   readonly disableThinking?: boolean;
+  /** Private AI Studio outer continuation ID; null explicitly clears the captured value. */
+  readonly previousResponseId?: string | null;
+  /** Account runtime timezone captured from the page; falls back to Asia/Shanghai. */
+  readonly timezone?: string;
 }
 
 const INDEX = {
@@ -42,7 +44,7 @@ const INDEX = {
   system: 5,
   tools: 6,
   requestFlag: 10,
-  cachedContent: 11,
+  previousResponseId: 11,
   timezone: 13,
 } as const;
 
@@ -62,8 +64,11 @@ const GENERATION_INDEX: Readonly<Record<string, number>> = {
   imageOutputMode: 14,
   thinkingConfig: 16,
   mediaResolution: 17,
+  seed: 18,
   outputResolution: 26,
 } as const;
+
+const SAFETY_OFF_SETTINGS = Object.freeze([7, 8, 9, 10].map(category => Object.freeze([null, null, category, 5])));
 
 export const TOOL_TEMPLATES = {
   code_execution: [[]],
@@ -76,15 +81,31 @@ function ensureLength(values: unknown[], size: number): void {
   while (values.length < size) values.push(null);
 }
 
-function wireArgs(value: unknown): unknown {
-  if (!isRecord(value)) return value;
+function wireArgs(value: Record<string, unknown>): unknown[] {
   return [Object.entries(value).map(([key, item]) => [key, wireArgumentValue(item)])];
 }
 
-function wireArgumentValue(value: unknown): unknown {
+function wireArgumentValue(value: unknown): unknown[] {
   if (isRecord(value)) return [null, wireArgs(value)];
   if (Array.isArray(value)) return [null, null, value.map(wireArgumentValue)];
   return [null, null, value];
+}
+
+// google.protobuf.Struct encoding in JSPB positional form: pairs of
+// [key, Value] where Value is the oneof kind (1=null, 2=number, 3=string,
+// 4=bool, 5=struct, 6=list) placed at its field index.
+function wireStructPairs(value: Record<string, unknown>): unknown[] {
+  return Object.entries(value).map(([key, item]) => [key, wireStructValue(item)]);
+}
+
+function wireStructValue(value: unknown): unknown[] {
+  if (value === null || value === undefined) return [0];
+  if (typeof value === "number") return [null, value];
+  if (typeof value === "string") return [null, null, value];
+  if (typeof value === "boolean") return [null, null, null, value];
+  if (Array.isArray(value)) return [null, null, null, null, null, value.map(wireStructValue)];
+  if (isRecord(value)) return [null, null, null, null, [wireStructPairs(value)]];
+  return [null, null, String(value)];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -103,7 +124,8 @@ export function encodePart(part: AistudioPart): unknown[] {
   }
   if (part.functionCall) {
     const [name, args, callId] = part.functionCall;
-    const call: unknown[] = [name, wireArgs(args)];
+    const encodedArgs = isRecord(args) ? wireArgs(args) : args;
+    const call: unknown[] = [name, encodedArgs];
     if (callId) call.push(callId);
     const result: unknown[] = Array.from({ length: 11 }, () => null);
     result[10] = call;
@@ -115,7 +137,12 @@ export function encodePart(part: AistudioPart): unknown[] {
   }
   if (part.functionResponse) {
     const [name, response, callId] = part.functionResponse;
-    const functionResponse: unknown[] = [name, wireArgs(response)];
+    // The response payload is a google.protobuf.Struct in JSPB positional
+    // form: an entries array wrapped in a message array. The live RPC
+    // accepts this shape before applying its account-level permission checks.
+    // Match AI Studio's manual editor for scalar function results.
+    const responseStruct = isRecord(response) ? response : { response };
+    const functionResponse: unknown[] = [name, [wireStructPairs(responseStruct)]];
     if (callId) functionResponse.push(callId);
     const result: unknown[] = Array.from({ length: 12 }, () => null);
     result[11] = functionResponse;
@@ -185,7 +212,12 @@ function setGenerationValue(values: unknown[], name: string, value: unknown): vo
 }
 
 export function rewriteWireBody(originalBody: string, options: RewriteWireOptions): string {
-  const parsed: unknown = JSON.parse(originalBody);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(originalBody);
+  } catch {
+    throw new Error("捕获的 AI Studio 请求模板不是合法 JSON（可能捕获到了错误上报请求），请重试以触发重新捕获");
+  }
   if (!Array.isArray(parsed)) throw new Error("Captured AI Studio request body must be an array");
   const body = structuredClone(parsed) as unknown[];
   ensureLength(body, INDEX.timezone + 1);
@@ -232,21 +264,29 @@ export function rewriteWireBody(originalBody: string, options: RewriteWireOption
     body[INDEX.safety] = null;
   } else if (options.safetySettings !== undefined) {
     body[INDEX.safety] = options.safetySettings;
-  } else if (options.safetyOff || normalizedModel.startsWith("gemma-") || normalizedModel.startsWith("gemini-")) {
-    body[INDEX.safety] = [7, 8, 9, 10].map(category => [null, null, category, 5]);
+  } else if (!isTts) {
+    // Default to the loosest threshold (5 = OFF) for every text model unless
+    // the request explicitly provides safetySettings. AI Studio's pre-submit
+    // moderation is separate and cannot be disabled through this field.
+    body[INDEX.safety] = SAFETY_OFF_SETTINGS;
   }
-
   const tools = options.tools ?? null;
   body[INDEX.tools] = tools;
   if (!isImage) {
     if (tools?.length) {
-      body[INDEX.timezone] = body[INDEX.timezone] ?? [[null, null, "Asia/Shanghai"]];
+      body[INDEX.timezone] = body[INDEX.timezone] ?? [[null, null, options.timezone ?? "Asia/Shanghai"]];
       setGenerationValue(generation, "responseMimeType", null);
       setGenerationValue(generation, "responseSchema", null);
     } else {
       body.length = Math.min(body.length, 11);
     }
   }
+  // AIStudio2API 的现场证据：field 11（索引 10）固定为 1；但真实页面携带
+  // previousResponseId 的续接请求中该槽为 null，故仅在非续接请求时补 1。
+  if (options.previousResponseId === undefined && body[INDEX.requestFlag] == null) {
+    body[INDEX.requestFlag] = 1;
+  }
+  if (options.previousResponseId !== undefined) body[INDEX.previousResponseId] = options.previousResponseId;
   return JSON.stringify(body);
 }
 
@@ -272,6 +312,38 @@ export function buildToolsFromNames(names: readonly string[], model: string): un
   return names.map(raw => {
     const name = raw.trim().toLowerCase() as keyof typeof TOOL_TEMPLATES;
     if (!allowed.has(name) || !(name in TOOL_TEMPLATES)) throw new Error(`Tool ${raw} is not allowed for model ${model}`);
+    // SAFETY: the allowlist above narrows name to a known wire-template key; every template is an array payload.
     return structuredClone(TOOL_TEMPLATES[name]) as unknown as unknown[];
   });
+}
+
+export interface CountTokensWireOptions {
+  readonly model: string;
+  readonly contents: readonly AistudioContent[];
+  readonly systemInstruction?: AistudioContent | string | null;
+  readonly tools?: unknown[][] | null;
+}
+
+/**
+ * CountTokens 请求体（现场确认的形状）：纯文本 contents 用 [model, contents]；
+ * 含 system、tools 或 function/media part 时用 [model, null, generate]，
+ * generate 中 contents 位于索引 1、system 位于 5、tools 位于 6。
+ */
+export function encodeCountTokensBody(options: CountTokensWireOptions): string {
+  const model = options.model.startsWith("models/") ? options.model : `models/${options.model}`;
+  const contents = options.contents.map(encodeContent);
+  if (contents.length === 0 && !options.systemInstruction) throw new Error("CountTokens contents 不能为空");
+  const system = options.systemInstruction === undefined || options.systemInstruction === null
+    ? null
+    : typeof options.systemInstruction === "string"
+      ? encodeContent({ role: "user", parts: [{ text: options.systemInstruction }] })
+      : encodeContent(options.systemInstruction);
+  const tools = options.tools ?? null;
+  const hasSpecialPart = options.contents.some(content => content.parts.some(part =>
+    part.inlineData !== undefined || part.fileId !== undefined
+    || part.functionCall !== undefined || part.functionResponse !== undefined));
+  if (!system && !tools && !hasSpecialPart) return JSON.stringify([model, contents]);
+  const generate: unknown[] = [model, contents, null, null, null, system, tools];
+  while (generate.length > 2 && generate[generate.length - 1] === null) generate.pop();
+  return JSON.stringify([model, null, generate]);
 }

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 // 账号管理页：登录方式 / 账号卡片 / 轮询策略 + 两个登录模态
 import { onMounted } from 'vue';
-import { NButton, NCard, NInputNumber, NRadioButton, NRadioGroup } from 'naive-ui';
 import Icon from '../components/Icon.vue';
 import RemoteLoginModal from '../components/RemoteLoginModal.vue';
 import CookieModal from '../components/CookieModal.vue';
@@ -12,10 +11,10 @@ import type { Account } from '../types';
 
 const {
   accountRows, activeId, accountsLoading, rotCfg,
-  refreshingAccountId,
+  refreshingAccountId, refreshingAuthAccountId,
   loginInProgress, localLoginSessionId, cookieModal,
   loadAccounts, loadRotation, saveRotation, forceNext, activateAccount, deleteAccount,
-  refreshAccountProfile, refreshStaleProfiles, addAccount, cancelLocalLogin, startRemoteLogin,
+  refreshAccountProfile, refreshAccountAuth, refreshStaleProfiles, addAccount, cancelLocalLogin, startRemoteLogin,
 } = useAccounts();
 const { capabilities } = useAuth();
 
@@ -62,6 +61,23 @@ function membershipDate(value?: string | null): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
 }
+
+function authStateLabel(account: Account): string {
+  if (account.auth_state === 'refreshing') return '正在续活登录状态';
+  if (account.auth_state === 'refreshed' || account.auth_state === 'still_healthy' || account.auth_state === 'healthy') return '登录状态健康';
+  if (account.auth_state === 'reauth_required') return '需要重新登录';
+  if (account.auth_state === 'challenge_required') return '需要二次验证';
+  if (account.auth_state === 'refresh_failed') return '续活失败';
+  return '登录状态尚未检查';
+}
+
+function cookieExpiryLabel(value?: string | null): string {
+  if (!value) return 'Cookie 到期时间未知';
+  const expires = new Date(value);
+  if (Number.isNaN(expires.getTime())) return `Cookie 到期：${value}`;
+  const days = Math.max(0, Math.ceil((expires.getTime() - Date.now()) / 86_400_000));
+  return `最早 Cookie 约 ${days} 天后到期`;
+}
 </script>
 
 <template>
@@ -99,63 +115,72 @@ function membershipDate(value?: string | null): string {
     <div v-if="loginInProgress" class="login-progress">
       <Icon name="loader" :size="16" class="spin" />
       <span>登录会话进行中，请在弹出的浏览器窗口完成授权，最长约 10 分钟…</span>
-      <NButton tertiary size="small" :disabled="!localLoginSessionId" @click="cancelLocalLogin()">取消</NButton>
+      <v-btn variant="text" size="small" :disabled="!localLoginSessionId" @click="cancelLocalLogin()">取消</v-btn>
     </div>
 
     <div v-if="accountsLoading" class="empty-hint"><Icon name="loader" :size="18" class="spin" />加载账号…</div>
     <div v-else-if="!accountRows.length" class="empty-hint">还没有账号，通过上方任一方式添加。</div>
     <div v-else class="acct-grid">
-      <NCard v-for="a in accountRows" :key="a.id" size="small" class="acct-card">
-        <div class="acct-identity">
-          <div class="acct-avatar">
-            <img v-if="a.avatar_url" :src="a.avatar_url" :alt="accountTitle(a)" loading="lazy">
-            <span v-else>{{ accountInitials(a) }}</span>
-          </div>
-          <div class="acct-identity-body">
-            <div class="acct-head">
-              <span class="name">{{ accountTitle(a) }}</span>
-              <span class="tier-badge" :class="tierClass(a)">{{ tierLabel(a) }}</span>
+      <v-card v-for="a in accountRows" :key="a.id" class="acct-card" rounded="xl">
+        <v-card-text class="flex flex-col gap-3">
+          <div class="acct-identity">
+            <div class="acct-avatar">
+              <img v-if="a.avatar_url" :src="a.avatar_url" :alt="accountTitle(a)" loading="lazy">
+              <span v-else>{{ accountInitials(a) }}</span>
             </div>
-            <div class="acct-email">{{ a.email || '邮箱未识别' }}</div>
+            <div class="acct-identity-body">
+              <div class="acct-head">
+                <span class="name">{{ accountTitle(a) }}</span>
+                <span class="tier-badge" :class="tierClass(a)">{{ tierLabel(a) }}</span>
+              </div>
+              <div class="acct-email">{{ a.email || '邮箱未识别' }}</div>
+            </div>
+            <span v-if="a.id === activeId" class="badge">活跃</span>
+            <span v-else class="badge idle">待命</span>
+            <span v-if="a.auth_expired_active" class="badge danger">授权过期</span>
           </div>
-          <span v-if="a.id === activeId" class="badge">活跃</span>
-          <span v-else class="badge idle">待命</span>
-        </div>
-        <div class="acct-meta">
-          <span>创建：{{ fmtDate(a.created_at) }}</span>
-          <span v-if="a.requests !== undefined">请求 {{ a.requests || 0 }} · 成功 {{ a.success || 0 }} · 限流 {{ a.rate_limited || 0 }} · 错误 {{ a.errors ?? a.error ?? 0 }}</span>
-          <span v-if="a.cooldown_remaining">冷却中：{{ a.cooldown_remaining }} 秒后恢复</span>
-          <span v-if="a.membership_next_at">{{ membershipDateLabel(a) }}：{{ membershipDate(a.membership_next_at) }}</span>
-          <span v-if="a.profile_error" class="acct-profile-error">资料读取失败，可点击刷新重试</span>
-          <span v-else-if="a.profile_updated_at">资料更新：{{ fmtDate(a.profile_updated_at) }}</span>
-        </div>
-        <div class="acct-actions">
-          <NButton v-if="a.id !== activeId" tertiary size="small" @click="activateAccount(a.id)">激活</NButton>
-          <NButton tertiary size="small" :loading="refreshingAccountId === a.id" :disabled="Boolean(refreshingAccountId && refreshingAccountId !== a.id)" @click="refreshAccountProfile(a.id)">刷新资料</NButton>
-          <NButton tertiary type="error" size="small" @click="onDeleteAccount(a.id)">删除</NButton>
-        </div>
-      </NCard>
+          <div class="acct-meta">
+            <span>创建：{{ fmtDate(a.created_at) }}</span>
+            <span v-if="a.requests !== undefined">请求 {{ a.requests || 0 }} · 成功 {{ a.success || 0 }} · 限流 {{ a.rate_limited || 0 }} · 错误 {{ a.errors ?? a.error ?? 0 }}</span>
+            <span v-if="a.auth_expired_active" class="acct-profile-error">Google 授权已过期，请重新登录或导入 Cookie</span>
+            <span v-else-if="a.cooldown_remaining">冷却中：{{ a.cooldown_remaining }} 秒后恢复</span>
+            <span :class="{ 'acct-profile-error': ['reauth_required', 'challenge_required', 'refresh_failed'].includes(String(a.auth_state)) }">{{ authStateLabel(a) }}</span>
+            <span>{{ cookieExpiryLabel(a.earliest_cookie_expiry) }}</span>
+            <span v-if="a.last_auth_refresh_at">登录检查：{{ fmtDate(a.last_auth_refresh_at) }}</span>
+            <span v-if="a.last_auth_refresh_error" class="acct-profile-error">{{ a.last_auth_refresh_error }}</span>
+            <span v-if="a.membership_next_at">{{ membershipDateLabel(a) }}：{{ membershipDate(a.membership_next_at) }}</span>
+            <span v-if="a.profile_error" class="acct-profile-error">资料读取失败，可点击刷新重试</span>
+            <span v-else-if="a.profile_updated_at">资料更新：{{ fmtDate(a.profile_updated_at) }}</span>
+          </div>
+          <div class="acct-actions">
+            <v-btn v-if="a.id !== activeId" variant="text" size="small" @click="activateAccount(a.id)">激活</v-btn>
+            <v-btn variant="text" size="small" :loading="refreshingAccountId === a.id" :disabled="Boolean(refreshingAccountId && refreshingAccountId !== a.id)" @click="refreshAccountProfile(a.id)">刷新资料</v-btn>
+            <v-btn variant="text" size="small" :loading="refreshingAuthAccountId === a.id" :disabled="Boolean(refreshingAuthAccountId && refreshingAuthAccountId !== a.id)" @click="refreshAccountAuth(a.id)">续活登录</v-btn>
+            <v-btn variant="text" color="error" size="small" @click="onDeleteAccount(a.id)">删除</v-btn>
+          </div>
+        </v-card-text>
+      </v-card>
     </div>
 
     <div class="section-title">轮询策略</div>
-    <NCard size="small" style="max-width: 520px">
-      <div class="flex flex-col gap-4">
+    <v-card style="max-width: 520px" rounded="xl">
+      <v-card-text class="flex flex-col gap-4">
         <div>
           <div class="field-label"><span>模式</span></div>
-          <n-radio-group v-model:value="rotCfg.mode">
-            <n-radio-button v-for="v in rotationModes" :key="v" :value="v" :label="v" />
-          </n-radio-group>
+          <v-btn-toggle v-model="rotCfg.mode" mandatory density="comfortable">
+            <v-btn v-for="v in rotationModes" :key="v" :value="v" size="small">{{ v }}</v-btn>
+          </v-btn-toggle>
         </div>
         <div>
           <div class="field-label"><span>冷却时间（秒）</span></div>
-          <n-input-number v-model:value="rotCfg.cooldown" :min="0" class="w-full" />
+          <v-text-field v-model.number="rotCfg.cooldown" type="number" :min="0" class="w-full" />
         </div>
         <div class="flex gap-2">
-          <NButton type="primary" size="small" @click="saveRotation()">保存</NButton>
-          <NButton tertiary size="small" @click="forceNext()">立即切换账号</NButton>
+          <v-btn color="primary" size="small" @click="saveRotation()">保存</v-btn>
+          <v-btn variant="text" size="small" @click="forceNext()">立即切换账号</v-btn>
         </div>
-      </div>
-    </NCard>
+      </v-card-text>
+    </v-card>
 
     <RemoteLoginModal />
     <CookieModal />

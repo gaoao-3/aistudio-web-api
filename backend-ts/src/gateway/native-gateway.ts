@@ -1,11 +1,21 @@
-import { NativeBrowserSession } from "./browser-session.js";
-import { normalizeGeminiRequest } from "./gemini-normalize.js";
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
+import { runtimeRoot } from "../config.js";
+import { NativeBrowserSession, type AuthRefreshResult } from "./browser-session.js";
+import { normalizeGeminiRequest, type NormalizedGeminiRequest } from "./gemini-normalize.js";
 import { parseAIStudioResponse, toGeminiResponse } from "./response-parser.js";
-import { rewriteWireBody } from "./wire-codec.js";
+import { encodeCountTokensBody, rewriteWireBody } from "./wire-codec.js";
 import type { AistudioContent, AistudioPart } from "./wire-codec.js";
-import { fetchModelCatalog } from "./model-catalog.js";
+import { fetchCountTokens, fetchModelCatalog } from "./model-catalog.js";
+import { validateGenerationConfig } from "./generation-limits.js";
 import { IncrementalAIStudioParser } from "./incremental-parser.js";
+import { assertProtocolCapability } from "./protocol-capabilities.js";
 import type { AccountProfile } from "../accounts/account-profile.js";
+
+export interface NativeGenerationOptions {
+  readonly previousResponseId?: string | null;
+  readonly onResponseId?: (responseId: string) => void;
+}
 
 interface ToolGroups {
   readonly builtins: unknown[][];
@@ -42,47 +52,13 @@ function bridgeBuiltinResult(contents: readonly AistudioContent[], parsed: Retur
   ];
 }
 
-export function functionResponseRejected(status: number, body: string): boolean {
-  if (status < 400) return false;
-  const lowered = body.toLowerCase();
-  return [
-    "permission",
-    "禁止访问",
-    "invalid value",
-    "unexpected list for single non-message field",
-    "request contains an invalid argument",
-  ].some(marker => lowered.includes(marker));
-}
-
-export function functionResponseStalled(status: number, body: string): boolean {
-  if (status < 200 || status >= 300) return false;
-  try {
-    const candidate = parseAIStudioResponse(body).candidate;
-    return !candidate.text && !candidate.parts.some(part => "functionCall" in part || "inlineData" in part);
-  } catch {
-    return false;
-  }
+function emptyCandidateResponse(parsed: { readonly candidate: { readonly text: string; readonly parts: readonly Record<string, unknown>[] } }): boolean {
+  return !parsed.candidate.text.trim()
+    && !parsed.candidate.parts.some(part => "functionCall" in part || "inlineData" in part);
 }
 
 function hasFunctionResponse(contents: readonly AistudioContent[]): boolean {
   return contents.some(content => content.parts.some(part => Boolean(part.functionResponse)));
-}
-
-export function flattenFunctionContents(contents: readonly AistudioContent[]): AistudioContent[] {
-  const lines: string[] = [];
-  const media: AistudioPart[] = [];
-  for (const content of contents) {
-    for (const part of content.parts) {
-      if (part.functionCall) lines.push(`[assistant tool call: ${part.functionCall[0]}]\n${JSON.stringify(part.functionCall[1])}`);
-      else if (part.functionResponse) lines.push(`[tool result: ${part.functionResponse[0]}]\n${JSON.stringify(part.functionResponse[1])}`);
-      else if (part.text) lines.push(part.text);
-      // Media parts are not representable as text; keep them so the fallback
-      // replay does not silently drop images/audio/documents attached to the
-      // timeline (e.g. a user image sent after a tool exchange).
-      else if (part.inlineData || part.fileId) media.push(part);
-    }
-  }
-  return [{ role: "user", parts: [{ text: lines.join("\n\n") }, ...media] }];
 }
 
 export class NativeGateway {
@@ -91,6 +67,12 @@ export class NativeGateway {
 
   async warmup(): Promise<void> {
     await this.session.warmup();
+  }
+
+  async refreshAuth(): Promise<AuthRefreshResult> {
+    const result = await this.session.refreshAuth();
+    if (result.status === "refreshed" || result.status === "still_healthy") this.modelCache = undefined;
+    return result;
   }
 
   async switchAuth(authFile: string): Promise<void> {
@@ -105,8 +87,38 @@ export class NativeGateway {
     return models;
   }
 
-  async generate(model: string, body: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> {
-    return this.generateInternal(model, body, undefined, signal);
+  /** 基于 ListModels 目录校验 generation 参数；目录不可用时 fail-open 不阻塞请求。 */
+  private async validateGeneration(normalized: NormalizedGeminiRequest): Promise<void> {
+    let models: Record<string, unknown>[];
+    try {
+      models = await this.models();
+    } catch {
+      return;
+    }
+    const entry = models.find(item => item.name === normalized.model);
+    validateGenerationConfig(entry, normalized.generationConfig);
+  }
+
+  async countTokens(model: string, body: unknown): Promise<Record<string, unknown>> {
+    assertProtocolCapability("countTokens");
+    const normalized = normalizeGeminiRequest(model, body);
+    const wire = encodeCountTokensBody({
+      model: normalized.model,
+      contents: normalized.contents,
+      systemInstruction: normalized.systemInstruction,
+      tools: normalized.tools,
+    });
+    const totalTokens = await fetchCountTokens(this.session, wire);
+    return { totalTokens };
+  }
+
+  async generate(
+    model: string,
+    body: unknown,
+    signal?: AbortSignal,
+    options?: NativeGenerationOptions,
+  ): Promise<Record<string, unknown>> {
+    return this.generateInternal(model, body, undefined, signal, options);
   }
 
   async generateStream(
@@ -114,8 +126,9 @@ export class NativeGateway {
     body: unknown,
     onResponse: (response: Record<string, unknown>) => void,
     signal?: AbortSignal,
+    options?: NativeGenerationOptions,
   ): Promise<Record<string, unknown>> {
-    return this.generateInternal(model, body, onResponse, signal);
+    return this.generateInternal(model, body, onResponse, signal, options);
   }
 
   private async generateInternal(
@@ -123,8 +136,11 @@ export class NativeGateway {
     body: unknown,
     onResponse?: (response: Record<string, unknown>) => void,
     signal?: AbortSignal,
+    options?: NativeGenerationOptions,
   ): Promise<Record<string, unknown>> {
+    assertProtocolCapability("generateContent");
     const normalized = normalizeGeminiRequest(model, body);
+    await this.validateGeneration(normalized);
     const template = await this.session.captureTemplate(normalized.model);
     const generation = normalized.generationConfig;
     const makeBody = async (
@@ -134,7 +150,7 @@ export class NativeGateway {
       disableThinking = false,
     ): Promise<string> => {
       const snapshot = await this.session.generateSnapshot(contents);
-      return rewriteWireBody(template.body, {
+      const wireBody = rewriteWireBody(template.body, {
         model: normalized.model,
         contents,
         snapshot,
@@ -147,8 +163,18 @@ export class NativeGateway {
         ...(typeof generation.topK === "number" ? { topK: generation.topK } : {}),
         ...(typeof generation.maxOutputTokens === "number" ? { maxTokens: generation.maxOutputTokens } : {}),
         sanitizePlainText,
+        ...(template.timezone ? { timezone: template.timezone } : {}),
         disableThinking: disableThinking || normalized.model.toLowerCase().includes("gemini-2.5-flash-image"),
+        ...(sanitizePlainText
+          ? { previousResponseId: null }
+          : options?.previousResponseId !== undefined ? { previousResponseId: options.previousResponseId } : {}),
       });
+      if (process.env.AISTUDIO_DEBUG_WIRE === "1") {
+        try {
+          appendFileSync(join(runtimeRoot, "data", "wire-debug.log"), JSON.stringify({ time: new Date().toISOString(), sanitizePlainText, body: JSON.parse(wireBody) }) + "\n");
+        } catch { /* debug only */ }
+      }
+      return wireBody;
     };
     const replay = async (wireBody: string): Promise<{ status: number; body: string }> => {
       if (!onResponse) return this.session.replay(wireBody, undefined, signal);
@@ -182,37 +208,21 @@ export class NativeGateway {
     } else {
       response = await replay(await makeBody(normalized.contents, effectiveTools, false));
     }
-    const needsFunctionFallback = functionResponseRejected(response.status, response.body)
-      || (emulateMixedTools && functionResponseStalled(response.status, response.body));
-    let flattened: AistudioContent[] | undefined;
-    if (needsFunctionFallback && hasFunctionResponse(normalized.contents)) {
-      flattened = flattenFunctionContents(normalized.contents);
-      if (emulateMixedTools) {
-        response = await replay(await makeBody(flattened, null, true, true));
-      } else {
-        response = await replay(await makeBody(flattened, effectiveTools, true, true));
-        if (functionResponseRejected(response.status, response.body)) {
-          response = await replay(await makeBody(flattened, null, true, true));
-        }
-      }
-    }
-    if (flattened && functionResponseStalled(response.status, response.body)) {
-      const finalContents: AistudioContent[] = [
-        ...flattened,
-        {
-          role: "user",
-          parts: [{ text: "The tool result is complete. Return the final answer now in plain text. Do not call any more tools." }],
-        },
-      ];
-      response = await replay(await makeBody(finalContents, null, true, true));
-    }
     if (response.status < 200 || response.status >= 300) {
       throw Object.assign(
         new Error(`AI Studio upstream returned HTTP ${response.status}: ${response.body.slice(0, 500)}`),
         { statusCode: response.status },
       );
     }
-    return toGeminiResponse(parseAIStudioResponse(response.body));
+    const finalParsed = parseAIStudioResponse(response.body);
+    if (emptyCandidateResponse(finalParsed)) {
+      throw Object.assign(
+        new Error("AI Studio upstream returned an empty candidate"),
+        { statusCode: 502 },
+      );
+    }
+    if (finalParsed.responseId) options?.onResponseId?.(finalParsed.responseId);
+    return toGeminiResponse(finalParsed);
   }
 
   async inspectAccountProfile(): Promise<AccountProfile> {

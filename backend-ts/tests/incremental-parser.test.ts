@@ -27,3 +27,12 @@ describe("incremental AI Studio parser", () => {
     assert.deepEqual(parser.feed(",2,3]]]]"), [[[1, 2, 3]]]);
   });
 });
+
+it("parses AI Studio sparse JSON arrays without dropping streamed chunks", async () => {
+  const { densifySparseJSON } = await import("../src/gateway/sparse-json.js");
+  assert.deepEqual(JSON.parse(densifySparseJSON("[,,1,[\"a\",],\"literal [,,] text\"]")), [null, null, 1, ["a", null], "literal [,,] text"]);
+
+  const parser = new IncrementalAIStudioParser();
+  const chunks = parser.feed("[[[[,,1]]]]");
+  assert.deepEqual(chunks, [[[null, null, 1]]]);
+});
