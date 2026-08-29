@@ -25,7 +25,8 @@
   <a href="#-webui">WebUI</a> ·
   <a href="#-账号轮询">账号轮询</a> ·
   <a href="#-常见问题">常见问题</a> ·
-  <a href="#%EF%B8%8F-配置">配置</a>
+  <a href="#%EF%B8%8F-配置">配置</a> ·
+  <a href="#-docker-部署">Docker 部署</a>
 </p>
 
 ---
@@ -59,6 +60,8 @@ flowchart TD
 | 🔁 | **多账号轮询** | `round_robin`、`lru`、`least_rl`；429 自动冷却切换，403 无权限的 账号×模型 组合长效跳过 |
 | 🖥️ | **WebUI** | 对话、历史、账号、API 密钥、统计和服务设置，适配桌面端与移动端 |
 | 🛡️ | **安全转发** | CloakBrowser 管理浏览器会话，HTTP 层支持本地 API Key 鉴权 |
+| 🧰 | **可靠性** | 流式请求网络级失败自动重试、浏览器空闲自动关闭与启动看门狗、坏模板自愈 |
+| 🐳 | **Docker 部署** | 多阶段镜像内置前端构建、后端编译与 CloakBrowser Chromium，数据卷持久化 |
 
 ---
 
@@ -69,6 +72,7 @@ flowchart TD
 - 一个可以正常访问 [Google AI Studio](https://aistudio.google.com/) 的 Google 账号
 - 本机登录、远程辅助登录或 Cookie 导入方式三选一
 - 如果部署在局域网或公网，建议配置 API Key 并使用 HTTPS 反向代理
+- 不想本地装 Node.js/pnpm 也可以直接使用 [Docker 部署](#-docker-部署)
 
 ---
 

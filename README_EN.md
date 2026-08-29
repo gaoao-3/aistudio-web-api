@@ -23,7 +23,8 @@ Exposes the **Gemini-native `generateContent` API** through a logged-in AI Studi
   <a href="#webui">WebUI</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#architecture">Architecture</a> ·
-  <a href="#faq">FAQ</a>
+  <a href="#faq">FAQ</a> ·
+  <a href="#-docker-deployment">Docker</a>
 </p>
 
 ---
@@ -49,6 +50,8 @@ Exposes the **Gemini-native `generateContent` API** through a logged-in AI Studi
 | 🛡️ | **Anti-detection** | CloakBrowser fingerprint-evasion Chromium, BotGuard snapshot auto-location via feature matching |
 | 🔁 | **Multi-account management** | Local browser login, remote assisted login, cookie import, request-level round-robin / LRU / least-rate-limited rotation, automatic cooldown after 429s, and long-lived account×model skip after upstream 403 permission errors |
 | 👤 | **Account profile** | Best-effort sync of nickname, avatar, and Free/Pro/Ultra tier from AI Studio / Google Account pages, with manual refresh and stale-data fallback |
+| 🧰 | **Reliability** | Automatic retry on network-level streaming failures, browser idle auto-close with startup watchdog, and self-healing of corrupted request templates |
+| 🐳 | **Docker deployment** | Multi-stage image with frontend build, backend compile, and CloakBrowser Chromium baked in; data persisted via volume |
 
 ## 🚀 Quick Start
 
@@ -71,6 +74,9 @@ pnpm start:fast
 ```
 
 </details>
+
+> [!TIP]
+> Prefer Docker? A multi-stage image with everything baked in is available — see [Docker Deployment](#-docker-deployment).
 
 Open **<http://localhost:3006>** and follow these steps:
 
