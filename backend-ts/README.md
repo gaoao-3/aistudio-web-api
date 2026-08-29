@@ -1,8 +1,6 @@
 # Fastify backend
 
-The public HTTP server, browser capture/replay gateway, BotGuard integration,
-incremental streaming parser, and Interactions state are implemented in
-TypeScript. The service does not start Uvicorn, FastAPI, or a Python worker.
+The public HTTP server, browser capture/replay gateway, BotGuard integration, and native Gemini API request normalization, streaming parser, and AI Studio wire codec are implemented in TypeScript.
 Google account onboarding supports both a local headed CloakBrowser window and
 a headless, remotely assisted step flow; successful sessions are persisted as
 Playwright storage state in the native account store.

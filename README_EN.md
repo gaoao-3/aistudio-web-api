@@ -4,7 +4,7 @@
 
 **Turn the Google AI Studio web playground into your own callable Gemini API service.**
 
-Exposes both the **Gemini-native API** and the **Interactions API** — with multimodal input, tool calling, thinking chains, multi-account rotation, and an AI Studio-style WebUI built for desktop and mobile.
+Exposes the **Gemini-native `generateContent` API** through a logged-in AI Studio session, with multimodal input, tool calling, thinking chains, multi-account rotation, and an AI Studio-style WebUI built for desktop and mobile.
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6?style=for-the-badge&logo=typescript&logoColor=white)
 ![Fastify](https://img.shields.io/badge/Fastify-5-000000?style=for-the-badge&logo=fastify&logoColor=white)
@@ -22,7 +22,8 @@ Exposes both the **Gemini-native API** and the **Interactions API** — with mul
   <a href="#api-usage">API Usage</a> ·
   <a href="#webui">WebUI</a> ·
   <a href="#configuration">Configuration</a> ·
-  <a href="#architecture">Architecture</a>
+  <a href="#architecture">Architecture</a> ·
+  <a href="#faq">FAQ</a>
 </p>
 
 ---
@@ -30,7 +31,7 @@ Exposes both the **Gemini-native API** and the **Interactions API** — with mul
 > [!IMPORTANT]
 > Model discovery and generation run through a logged-in Google AI Studio browser session. Only run it with Google accounts and network environments you are authorized to use.
 >
-> This project provides the Gemini-native API, Interactions API, multimodal input, tool calling, multi-account rotation, and an AI Studio-style WebUI. Model access credentials come from the AI Studio session.
+> This project provides the Gemini-native generation API, multimodal input, tool calling, multi-account rotation, and an AI Studio-style WebUI. Model access credentials come from the AI Studio session.
 
 ---
 
@@ -38,16 +39,15 @@ Exposes both the **Gemini-native API** and the **Interactions API** — with mul
 
 |  | Capability | Description |
 |:---:|---|---|
-| ⚡ | **Gemini-native API** | `/v1beta/models/{model}:generateContent`, `:streamGenerateContent`, `/v1beta/models` |
-| 💬 | **Interactions API** | `/v1/interactions`, `/v1beta/interactions`, and `/v1beta2/interactions` (create / get / delete / list / cancel), locally emulated `previous_interaction_id` server state, standard-SSE events (`interaction.created` → `interaction.completed` / `interaction.requires_action`), client-disconnect abort |
-| 🖥️ | **Native TypeScript backend** | Fastify, CloakBrowser, BotGuard hooks, wire codec, response parsing, and Interactions state all run in Node.js |
+| ⚡ | **Gemini-native API** | `/v1` and `/v1beta` model routes for `generateContent`, `streamGenerateContent`, authoritative `countTokens`, and model discovery |
+| 🖥️ | **Native TypeScript backend** | Fastify, CloakBrowser, BotGuard hooks, wire codec, response parsing, and native request routing all run in Node.js |
 | 🌐 | **WebUI** | AI Studio-style interface: chat, history, accounts, usage stats; mobile drawer layout |
 | 📡 | **Live model catalog** | Reads the AI Studio panel through the logged-in browser session, with a built-in fallback list on failure |
-| 🛠️ | **Native tools** | WebUI and API support explicit Google Search, Code Execution, Google Maps, URL Context, and custom `functionCall` / `functionResponse` replay with `thought_signature` passthrough |
+| 🛠️ | **Native tools** | WebUI can use Google Search, Code Execution, Google Maps, and URL Context; the API supports the full native Function Calling loop (declaration → `functionCall` → client-side execution → `functionResponse` → final answer) |
 | 🧠 | **Thinking** | Thought steps / streaming text deltas, `thinking_signature` passthrough, `total_thought_tokens` accounting |
 | 🖼️ | **Multimodal** | The Chat page reads images, audio, video, PDF, text, and code files; the native API accepts `inlineData` and existing Google Files `fileData` |
 | 🛡️ | **Anti-detection** | CloakBrowser fingerprint-evasion Chromium, BotGuard snapshot auto-location via feature matching |
-| 🔁 | **Multi-account management** | Local browser login, remote assisted login, cookie import, request-level round-robin / LRU / least-rate-limited rotation, and automatic cooldown after 429s |
+| 🔁 | **Multi-account management** | Local browser login, remote assisted login, cookie import, request-level round-robin / LRU / least-rate-limited rotation, automatic cooldown after 429s, and long-lived account×model skip after upstream 403 permission errors |
 | 👤 | **Account profile** | Best-effort sync of nickname, avatar, and Free/Pro/Ultra tier from AI Studio / Google Account pages, with manual refresh and stale-data fallback |
 
 ## 🚀 Quick Start
@@ -88,107 +88,50 @@ Open **<http://localhost:3006>** and follow these steps:
 
 Once `AISTUDIO_API_KEY` is set, use `Authorization: Bearer <key>`, `x-api-key`, `x-goog-api-key`, or the `?key=` query parameter. The official google-genai SDK can point its `base_url` at this service directly.
 
-API keys only authenticate external requests. Built-in Google tools are WebUI-only: native tool declarations are removed from external API requests before they reach AI Studio, while local custom function tools remain available.
+API keys only authenticate external requests. Built-in Google tools are WebUI-only: native tool declarations are removed from external API requests, while local custom function declarations are retained for the client to execute and answer with `functionResponse`.
 
 ## 📚 API Usage
 
-### 💬 Interactions API (recommended)
-
-The service accepts the current official `/v1beta/interactions`, stable `/v1/interactions`, and the `/v1beta2/interactions` path used by the migration guide. The examples below use the migration-guide path.
-
-```bash
-# Basic chat
-curl http://localhost:3006/v1beta2/interactions \
-  -H "Authorization: Bearer your-secret-token" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "gemini-3-flash-preview", "input": "Hello!"}'
-
-# Streaming
-curl http://localhost:3006/v1beta2/interactions \
-  -H "Authorization: Bearer your-secret-token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gemini-3-flash-preview",
-    "input": "Explain quantum entanglement in three sentences.",
-    "stream": true
-  }'
-
-# Multi-turn with server-side state (emulated locally)
-curl http://localhost:3006/v1beta2/interactions \
-  -H "Authorization: Bearer your-secret-token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gemini-3-flash-preview",
-    "input": "What about tomorrow?",
-    "previous_interaction_id": "v1_xxx"
-  }'
-```
-
-# Generation parameters use snake_case and are mapped to the
-# generateContent camelCase wire names automatically
-curl http://localhost:3006/v1beta2/interactions \
-  -H "Authorization: Bearer your-secret-token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gemini-3-flash-preview",
-    "input": "Draw an image",
-    "generation_config": {
-      "thinking_level": "low",
-      "image_config": { "aspect_ratio": "1:1", "image_size": "1K" }
-    }
-  }'
-
-Streaming responses use standard SSE framing (`event:` + `data:` lines):
-
-```text
-event: interaction.created    # carries the interaction object
-event: interaction.in_progress
-event: step.start             # declares the step type via index / step
-event: step.delta             # text / image / audio increments
-event: step.stop
-event: interaction.completed  # or interaction.requires_action (awaiting a function call)
-event: done
-data: [DONE]
-```
-
-Thinking text and body text both arrive as `step.delta`; the index→type mapping from `step.start` tells them apart, and tool round-trips end with `requires_action`. Disconnecting the client aborts the upstream browser request and releases the account.
-
-**Official SDK:**
-
-```python
-from google import genai
-
-client = genai.Client(
-    api_key="your-secret-token",
-    http_options={"base_url": "http://localhost:3006"},
-)
-r = client.interactions.create(model="gemini-3-flash-preview", input="Hello")
-```
-
 ### ⚡ Gemini-native API
 
-```bash
-curl http://localhost:3006/v1beta/models/gemini-3-flash-preview:generateContent \
-  -H "Authorization: Bearer your-secret-token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "contents": [{"role": "user", "parts": [{"text": "Hello"}]}],
-    "tools": [{"googleSearchRetrieval": {}}]
-  }'
+The service exposes the Gemini `generateContent` contract through both `/v1` and `/v1beta`. Requests use the native `contents` / `parts` schema and can include multimodal data, thinking configuration, tools, structured output, safety settings, and custom function declarations.
 
-# Model list (live with a logged-in AI Studio account; built-in fallback otherwise)
-curl http://localhost:3006/v1beta/models -H "Authorization: Bearer your-secret-token"
+`POST /v1beta/models/{model}:countTokens` returns the authoritative input token count (`{"totalTokens": N}`) without consuming generation quota. `generationConfig` is validated against the live ListModels catalog: `maxOutputTokens` beyond the model limit, out-of-range `temperature`/`topP`/`topK`, or an unsupported `thinkingLevel` fail fast with HTTP 400.
+
+For native Function Calling, keep the model part (including `thoughtSignature`) from the first response, then append a `functionResponse` user part with the same call `id`; the service automatically re-attaches the first-turn `responseId` and pins the original account, so clients never handle continuation IDs. Scalar results must be wrapped as `{ "response": <value> }`.
+
+```bash
+# Export the key created in the WebUI; avoid putting credentials in shell history.
+export AISTUDIO_API_KEY="<key-created-in-webui>"
+
+# Non-streaming
+curl http://localhost:3006/v1beta/models/gemini-3-flash-preview:generateContent \
+  -H "Authorization: Bearer ${AISTUDIO_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"contents":[{"role":"user","parts":[{"text":"Hello"}]}]}'
+
+# Streaming
+curl http://localhost:3006/v1beta/models/gemini-3-flash-preview:streamGenerateContent \
+  -H "Authorization: Bearer ${AISTUDIO_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"contents":[{"role":"user","parts":[{"text":"Explain quantum entanglement."}]}]}'
+
+# Model list
+curl http://localhost:3006/v1beta/models -H "Authorization: Bearer ${AISTUDIO_API_KEY}"
 ```
+
+For Gemini 3 multi-turn requests, preserve returned `thought` parts and `thoughtSignature` values. Native `functionResponse` failures are returned unchanged: the gateway never rewrites tool history as text or masks an upstream failure with a fallback prompt.
+
 
 ## 🌐 WebUI
 
 | Page | Description |
 |:---:|---|
 | 💬 **Chat** | streaming, collapsible thinking, multimedia/file upload, image generation, Google Search / Code Execution / Google Maps / URL Context, tool-call cards, and run settings |
-| 🕘 **History** | stored interactions; click to load and continue, deletable |
+| 🕘 **History** | current conversation stored locally in the browser; open or clear it |
 | 👤 **Accounts** | multi-account login, request-level rotation, rate-limit cooldown, activate/delete, profile and tier refresh |
 | 🔑 **API keys** | create, inspect, and delete local service keys used for API authentication |
-| ⚙️ **Service settings** | Adjust request size, browser/login timeouts, Interaction retention, account throttling, and proxy settings, with restart status |
+| ⚙️ **Service settings** | Adjust request size, browser/login timeouts, account throttling, and proxy settings, with restart status |
 | 📊 **Stats** | per-model requests, rate limits, token usage |
 
 ## 🔧 Configuration
@@ -201,16 +144,20 @@ Via environment variables or a `.env` file (see `.env.example`). Common options:
 | `AISTUDIO_HOST` | `0.0.0.0` | Listen address |
 | `AISTUDIO_API_KEY` | empty | Enables auth when set |
 | `AISTUDIO_BROWSER_HEADLESS` | `true` | Run CloakBrowser headlessly |
+| `AISTUDIO_BROWSER_IDLE_TIMEOUT_MS` | `1800000` | Close an idle browser after this many milliseconds; `0` disables idle close |
 | `AISTUDIO_BROWSER_TIMEOUT_MS` | `120000` | Browser upstream timeout in milliseconds |
 | `AISTUDIO_API_BODY_LIMIT_BYTES` | `33554432` | Maximum API request body size in bytes (32 MiB by default) |
 | `AISTUDIO_LOGIN_TIMEOUT_MS` | `600000` | Google login flow timeout in milliseconds |
 | `AISTUDIO_LOGIN_SESSION_RETENTION_MS` | `600000` | Retention period for completed login session status in milliseconds |
 | `AISTUDIO_PROXY_URL` | system proxy | Browser proxy URL |
-| `AISTUDIO_RUNTIME_ROOT` | project root | Runtime directory containing accounts, keys, interactions, and stats |
+| `AISTUDIO_RUNTIME_ROOT` | project root | Runtime directory containing accounts, keys, and stats |
 | `AISTUDIO_AUTH_FILE` | active account | Playwright storage state used by CloakBrowser |
-| `AISTUDIO_INTERACTIONS_DIR` | `data/interactions` | Interaction state directory |
-| `AISTUDIO_INTERACTIONS_MAX_COUNT` | `30` | Keep only the newest interactions; `0` disables the count limit |
-| `AISTUDIO_INTERACTIONS_TTL_SECONDS` | `0` | Optional time-based cleanup in seconds; `0` disables time expiration |
+| `AISTUDIO_PRIVATE_CONTINUATION` | `true` | Function-result turns reuse the first-turn `responseId` and pin the original account; disabling it usually makes the web upstream reject `functionResponse` |
+| `AISTUDIO_RESPONSE_CACHE_ENABLED` | `true` | Enable SQLite generation-response caching |
+| `AISTUDIO_RESPONSE_CACHE_MODE` | `deterministic` | `deterministic` requires `temperature=0`, a fixed `seed`, and no tools/functions/external files; `exact` restores legacy behavior; `off` disables caching |
+| `AISTUDIO_RESPONSE_CACHE_TTL_SECONDS` | `3600` | Response-cache lifetime in seconds; `0` disables it |
+| `AISTUDIO_RESPONSE_CACHE_MAX_BYTES` | `33554432` | Total response-cache limit in bytes |
+| `AISTUDIO_RESPONSE_CACHE_MAX_ENTRY_BYTES` | `1048576` | Maximum cached request or response size |
 | `AISTUDIO_ACCOUNT_ROTATION_MODE` | `round_robin` | Account rotation mode: `round_robin` / `lru` / `least_rl` |
 | `AISTUDIO_ACCOUNT_COOLDOWN_SECONDS` | `60` | Cooldown after a 429/quota-limit response, in seconds |
 | `AISTUDIO_ACCOUNT_MAX_RETRIES` | `3` | Maximum accounts attempted for one request |
@@ -218,7 +165,8 @@ Via environment variables or a `.env` file (see `.env.example`). Common options:
 
 > [!NOTE]
 > Per-model defaults (thinking, safety, default tools, ...) live in `config.yaml`.
->
+> `cachedContent` is rejected with HTTP 400 because this browser-session gateway does not provide the official Gemini Context Cache service; use the official Gemini API when server-side context caching is required.
+
 > The WebUI service settings page reads and writes the runtime settings through `GET/PUT /config/runtime`. Values are persisted to the runtime `.env`; an already running Fastify process keeps the values loaded at startup, so settings marked for restart must be followed by a service restart.
 
 ## 🧱 Architecture
@@ -228,8 +176,8 @@ Client (Gemini SDK / WebUI / curl)
     │
     ▼
 ┌──────────────────────────┐
-│   Fastify server          │  Gemini-native + Interactions routes
-│   /v1beta/...            │  rotation / state store / live catalog
+│   Fastify server          │  Gemini-native routes
+│   /v1/ and /v1beta/      │  rotation / live catalog
 └───────────┬──────────────┘
             ▼
 ┌──────────────────────────┐
@@ -249,6 +197,27 @@ Client (Gemini SDK / WebUI / curl)
 > **BotGuard** — every request needs an encrypted snapshot proving a real browser. The snapshot generator is hooked at runtime and located by feature matching (`.snapshot({` + `content` + `yield`), so Google renaming the function in bundle updates does not break it.
 >
 > **Live model catalog** — the logged-in AI Studio browser session supplies the credentials for model discovery and generation.
+
+## ❓ FAQ
+
+**Requests fail with `AI Studio streaming request failed: TypeError: Failed to fetch`?**
+
+This means the in-browser `fetch()` failed before a response arrived. Common causes: an unstable proxy for long-lived connections, expired cookies, account risk-control, or a stale captured request template. Troubleshoot in order:
+
+1. Open AI Studio manually with the service's browser profile and confirm you are logged in and can generate content.
+2. Re-login or import cookies, then restart the service so it re-captures the request template.
+3. Make sure the proxy applies to the backend-launched browser process, not only the system browser.
+4. If failures cluster on long requests, increase `AISTUDIO_BROWSER_TIMEOUT_MS`.
+
+**Model catalog returns `fallback`?**
+
+The browser session is logged out, cookies expired, the page protocol changed, or the network failed; the service temporarily serves the built-in catalog. Generation still requires an active AI Studio session — activate an account before requesting.
+
+**Hitting 429 / quota limits?**
+
+Account rotation automatically cools down the current account and fails over to other available accounts. With a single account, wait for the cooldown or lower the request rate.
+
+---
 
 ## 🙏 Acknowledgements
 
