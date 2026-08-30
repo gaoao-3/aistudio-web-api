@@ -1,16 +1,26 @@
 <div align="center">
 
-# ✨ aistudio-web-api
+<img src="assets/logo.svg" width="132" alt="aistudio-web-api logo" />
+
+# aistudio-web-api
 
 **Turn the Google AI Studio web playground into your own callable Gemini API service.**
 
 Exposes the **Gemini-native `generateContent` API** through a logged-in AI Studio session, with multimodal input, tool calling, thinking chains, multi-account rotation, and an AI Studio-style WebUI built for desktop and mobile.
 
-![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6?style=for-the-badge&logo=typescript&logoColor=white)
-![Fastify](https://img.shields.io/badge/Fastify-5-000000?style=for-the-badge&logo=fastify&logoColor=white)
-![Node.js](https://img.shields.io/badge/Node.js-22-339933?style=for-the-badge&logo=node.js&logoColor=white)
-![pnpm](https://img.shields.io/badge/pnpm-11-F69220?style=for-the-badge&logo=pnpm&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
+Ciallo～(∠・ω< )⌒☆
+
+<p>
+  <img src="assets/badge-typescript.svg" alt="TypeScript" />
+  &nbsp;
+  <img src="assets/badge-fastify.svg" alt="Fastify" />
+  &nbsp;
+  <img src="assets/badge-node.svg" alt="Node.js" />
+  &nbsp;
+  <img src="assets/badge-pnpm.svg" alt="pnpm" />
+  &nbsp;
+  <img src="assets/badge-license.svg" alt="MIT License" />
+</p>
 
 **[中文](./README.md)** · [English](./README_EN.md)
 
@@ -258,5 +268,5 @@ MIT
 ---
 
 <p align="center">
-  <sub>Built with ❤️ & TypeScript · If this project helps you, give it a ⭐</sub>
+  <sub>Built with ❤️ & TypeScript · Ciallo～(∠・ω< )⌒☆ · If this project helps you, give it a ⭐</sub>
 </p>

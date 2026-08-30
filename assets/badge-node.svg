@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="112" height="28" viewBox="0 0 112 28">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#5fbf6e"/>
+      <stop offset="100%" stop-color="#2b7a3c"/>
+    </linearGradient>
+  </defs>
+  <rect width="112" height="28" rx="14" fill="url(#g)"/>
+  <circle cx="17" cy="14" r="9" fill="#ffffff" opacity="0.22"/>
+  <text x="17" y="19" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="700" fill="#ffffff">N</text>
+  <text x="66" y="19" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#ffffff">Node.js</text>
+</svg>

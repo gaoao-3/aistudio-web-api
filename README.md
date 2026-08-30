@@ -1,39 +1,53 @@
 <div align="center">
 
-# ✨ aistudio-web-api
+<img src="assets/logo.svg" width="132" alt="aistudio-web-api logo" />
+
+# aistudio-web-api
 
 **只通过 Google AI Studio 网页会话，为自托管应用提供可调用的 Gemini API 服务。**
 
-服务使用 TypeScript、Fastify 和 CloakBrowser，把已登录的 AI Studio 账号封装成 Gemini 原生 `generateContent` API，并提供一套适配桌面端和移动端的 WebUI。
+TypeScript · Fastify · CloakBrowser —— 把已登录的 AI Studio 账号封装成 Gemini 原生 `generateContent` API，并附带一套适配桌面端与移动端的 WebUI。
 
-![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6?style=for-the-badge&logo=typescript&logoColor=white)
-![Fastify](https://img.shields.io/badge/Fastify-5-000000?style=for-the-badge&logo=fastify&logoColor=white)
-![Node.js](https://img.shields.io/badge/Node.js-22-339933?style=for-the-badge&logo=node.js&logoColor=white)
-![pnpm](https://img.shields.io/badge/pnpm-11-F69220?style=for-the-badge&logo=pnpm&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
+Ciallo～(∠・ω< )⌒☆
+
+<p>
+  <img src="assets/badge-typescript.svg" alt="TypeScript" />
+  &nbsp;
+  <img src="assets/badge-fastify.svg" alt="Fastify" />
+  &nbsp;
+  <img src="assets/badge-node.svg" alt="Node.js" />
+  &nbsp;
+  <img src="assets/badge-pnpm.svg" alt="pnpm" />
+  &nbsp;
+  <img src="assets/badge-license.svg" alt="MIT License" />
+</p>
 
 **[English](./README_EN.md)** · [中文](./README.md)
 
 </div>
 
+---
+
 <p align="center">
   <a href="#-项目定位">项目定位</a> ·
   <a href="#-功能特性">功能特性</a> ·
+  <a href="#-运行前提">运行前提</a> ·
   <a href="#-快速开始">快速开始</a> ·
   <a href="#-首次登录">首次登录</a> ·
+  <a href="#-鉴权">鉴权</a> ·
   <a href="#-api-用法">API 用法</a> ·
   <a href="#-webui">WebUI</a> ·
   <a href="#-账号轮询">账号轮询</a> ·
-  <a href="#-常见问题">常见问题</a> ·
-  <a href="#%EF%B8%8F-配置">配置</a> ·
-  <a href="#-docker-部署">Docker 部署</a>
+  <a href="#-配置">配置</a> ·
+  <a href="#-docker-部署">Docker 部署</a> ·
+  <a href="#-常见问题">常见问题</a>
 </p>
 
 ---
 
 ## 🎯 项目定位
 
-本项目把 **Google AI Studio 网页版**转换成一个可自托管的 API 服务：
+本项目把 **Google AI Studio 网页版**转换成一个可自托管的 API 服务——无需官方 API Key，登录即用。
 
 ```mermaid
 flowchart TD
@@ -403,7 +417,8 @@ Gemini 3 的无状态多轮请求必须保留模型返回的 `thought` 部分及
 
 ### 生成响应缓存
 
-默认采用 `deterministic` 策略：仅缓存请求完全相同、`temperature=0`、显式固定 `seed`，且不包含工具、函数调用/结果、外部文件或 Cached Content 的成功响应。`exact` 可恢复旧版“所有无工具精确请求”行为；流式请求命中后返回一个完整响应事件。缓存持久化在 SQLite 中。
+默认采用 `deterministic` 策略：仅缓存请求完全相同、`temperature=0`、显式固定 `seed`，且不包含工具、函数调用/结果、外部文件或 Cached Content 的成功响应。`exact` 可恢复旧版"所有无工具精确请求"行为；流式请求命中后返回一个完整响应事件。缓存持久化在 SQLite 中。
+
 | 变量 | 默认值 | 说明 |
 | --- | ---: | --- |
 | `AISTUDIO_RESPONSE_CACHE_ENABLED` | `true` | 是否启用生成响应缓存 |
@@ -486,8 +501,6 @@ pnpm dev:frontend
 
 ---
 
----
-
 ## ❓ 常见问题
 
 **请求时报 `AI Studio streaming request failed: TypeError: Failed to fetch`？**
@@ -515,10 +528,6 @@ pnpm dev:frontend
 - [LuanRT/BgUtils](https://github.com/LuanRT/BgUtils)
 - [iBUHub/AIStudioToAPI](https://github.com/iBUHub/AIStudioToAPI)
 - [linux.do](https://linux.do)
-- [chrysoljq/aistudio-api](https://github.com/chrysoljq/aistudio-api)
-- [LuanRT/BgUtils](https://github.com/LuanRT/BgUtils)
-- [iBUHub/AIStudioToAPI](https://github.com/iBUHub/AIStudioToAPI)
-- [linux.do](https://linux.do)
 
 ---
 
@@ -529,5 +538,5 @@ MIT
 ---
 
 <p align="center">
-  <sub>Built with ❤️ & TypeScript · If this project helps you, give it a ⭐</sub>
+  <sub>Built with ❤️ & TypeScript · Ciallo～(∠・ω< )⌒☆ · 如果这个项目帮到了你，点个 ⭐ 吧</sub>
 </p>

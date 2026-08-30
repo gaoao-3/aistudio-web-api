@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="256" y2="256" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#151238"/>
+      <stop offset="0.52" stop-color="#3b1d6e"/>
+      <stop offset="1" stop-color="#701a75"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="256" y2="256" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#a78bfa"/>
+      <stop offset="0.5" stop-color="#f472b6"/>
+      <stop offset="1" stop-color="#fb923c"/>
+    </linearGradient>
+    <linearGradient id="petal" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#fbcfe8"/>
+      <stop offset="1" stop-color="#f472b6"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="9" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="2.5" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- background -->
+  <rect width="256" height="256" rx="58" fill="url(#bg)"/>
+  <rect x="12" y="12" width="232" height="232" rx="50" stroke="url(#accent)" stroke-width="2.5" opacity="0.55"/>
+
+  <!-- top highlight -->
+  <ellipse cx="128" cy="26" rx="86" ry="16" fill="#ffffff" opacity="0.08"/>
+
+  <!-- sakura petals -->
+  <g filter="url(#soft)">
+    <g fill="url(#petal)">
+      <path d="M188 42c-5-11-18-14-23-5-5 8 1 17 12 16 7-1 10-6 11-11z" opacity="0.9"/>
+      <path d="M220 82c-4-9-15-12-19-5-4 8 0 16 10 16 6 0 8-5 9-11z" opacity="0.65"/>
+      <path d="M42 208c-4-9-15-12-19-5-4 8 0 16 10 16 6 0 8-5 9-11z" opacity="0.55"/>
+      <path d="M218 196c-4-7-12-10-16-5-4 6 0 13 8 13 4 0 7-3 8-8z" opacity="0.5"/>
+    </g>
+  </g>
+
+  <!-- orbit ring -->
+  <circle cx="128" cy="150" r="80" stroke="url(#accent)" stroke-width="1.4" opacity="0.22" stroke-dasharray="2 7"/>
+
+  <!-- AI -->
+  <text x="128" y="152" text-anchor="middle" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" font-size="102" font-weight="800" fill="url(#accent)" filter="url(#glow)">AI</text>
+
+  <!-- STUDIO -->
+  <text x="128" y="198" text-anchor="middle" font-family="Segoe UI, -apple-system, Helvetica, Arial, sans-serif" font-size="23" font-weight="600" letter-spacing="9" fill="#f5f3ff" opacity="0.92">STUDIO</text>
+</svg>
