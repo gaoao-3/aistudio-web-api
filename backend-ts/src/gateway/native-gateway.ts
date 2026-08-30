@@ -176,6 +176,12 @@ export class NativeGateway {
       }
       return wireBody;
     };
+    // 记录最近一次 wire 请求体，用于上游返回非 2xx 时落盘诊断（wire-debug.log）。
+    let lastWireBody = "";
+    const makeLoggedBody = async (contents: readonly AistudioContent[], tools: unknown[][] | null, sanitizePlainText: boolean, disableThinking = false): Promise<string> => {
+      lastWireBody = await makeBody(contents, tools, sanitizePlainText, disableThinking);
+      return lastWireBody;
+    };
     const replay = async (wireBody: string): Promise<{ status: number; body: string }> => {
       if (!onResponse) return this.session.replay(wireBody, undefined, signal);
       const parser = new IncrementalAIStudioParser();
@@ -196,7 +202,7 @@ export class NativeGateway {
     const effectiveTools = emulateMixedTools ? toolGroups.functions : normalized.tools;
     let response: { status: number; body: string };
     if (emulateMixedTools && !hasFunctionResponse(normalized.contents)) {
-      const builtinResponse = await this.session.replay(await makeBody(normalized.contents, toolGroups.builtins, false), undefined, signal);
+      const builtinResponse = await this.session.replay(await makeLoggedBody(normalized.contents, toolGroups.builtins, false), undefined, signal);
       if (builtinResponse.status < 200 || builtinResponse.status >= 300) {
         throw Object.assign(
           new Error(`AI Studio built-in tool phase returned HTTP ${builtinResponse.status}: ${builtinResponse.body.slice(0, 500)}`),
@@ -204,11 +210,15 @@ export class NativeGateway {
         );
       }
       const bridged = bridgeBuiltinResult(normalized.contents, parseAIStudioResponse(builtinResponse.body));
-      response = await replay(await makeBody(bridged, toolGroups.functions, false));
+      response = await replay(await makeLoggedBody(bridged, toolGroups.functions, false));
     } else {
-      response = await replay(await makeBody(normalized.contents, effectiveTools, false));
+      response = await replay(await makeLoggedBody(normalized.contents, effectiveTools, false));
     }
     if (response.status < 200 || response.status >= 300) {
+      // 上游拒绝时把 wire 请求体落盘，便于定位 400 类协议错误（无需手动开调试）。
+      try {
+        appendFileSync(join(runtimeRoot, "data", "wire-debug.log"), JSON.stringify({ time: new Date().toISOString(), status: response.status, upstreamBody: response.body.slice(0, 2000), body: lastWireBody ? JSON.parse(lastWireBody) : null }) + "\n");
+      } catch { /* debug only */ }
       throw Object.assign(
         new Error(`AI Studio upstream returned HTTP ${response.status}: ${response.body.slice(0, 500)}`),
         { statusCode: response.status },
