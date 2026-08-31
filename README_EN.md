@@ -51,6 +51,7 @@ Ciallo～(∠・ω< )⌒☆
 |  | Capability | Description |
 |:---:|---|---|
 | ⚡ | **Gemini-native API** | `/v1` and `/v1beta` model routes for `generateContent`, `streamGenerateContent`, authoritative `countTokens`, and model discovery |
+| 🤝 | **OpenAI-compatible API** | `/v1/chat/completions` (non-streaming + SSE streaming with `data: [DONE]`) and `/v1/models`, so OpenAI SDK / One-API / New-API clients can point `base_url` straight at this service |
 | 🖥️ | **Native TypeScript backend** | Fastify, CloakBrowser, BotGuard hooks, wire codec, response parsing, and native request routing all run in Node.js |
 | 🌐 | **WebUI** | AI Studio-style interface: chat, history, accounts, usage stats; mobile drawer layout |
 | 📡 | **Live model catalog** | Reads the AI Studio panel through the logged-in browser session, with a built-in fallback list on failure |
@@ -138,6 +139,44 @@ curl http://localhost:3006/v1beta/models -H "Authorization: Bearer ${AISTUDIO_AP
 
 For Gemini 3 multi-turn requests, preserve returned `thought` parts and `thoughtSignature` values. Native `functionResponse` failures are returned unchanged: the gateway never rewrites tool history as text or masks an upstream failure with a fallback prompt.
 
+### 🤝 OpenAI-compatible API
+
+The service also exposes OpenAI protocol endpoints (adapter approach modeled on AIStudio2API), so OpenAI SDK / One-API / New-API clients can point `base_url` directly at this service:
+
+| Method | Path | Description |
+| :---: | --- | --- |
+| `GET` | `/v1/models` | Model list as `{"object": "list", "data": [...]}` |
+| `POST` | `/v1/chat/completions` | Chat completion; with `"stream": true` returns SSE `chat.completion.chunk` frames terminated by `data: [DONE]` |
+
+```bash
+# Non-streaming
+curl http://localhost:3006/v1/chat/completions \
+  -H "Authorization: Bearer ${AISTUDIO_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gemini-3-flash-preview","messages":[{"role":"user","content":"Hello"}],"temperature":0.7}'
+
+# Streaming (OpenAI SDK)
+from openai import OpenAI
+client = OpenAI(api_key="${AISTUDIO_API_KEY}", base_url="http://localhost:3006/v1")
+stream = client.chat.completions.create(
+    model="gemini-3-flash-preview",
+    messages=[{"role": "user", "content": "Hello"}],
+    stream=True,
+    stream_options={"include_usage": True},
+)
+for chunk in stream:
+    print(chunk.choices[0].delta.content or "", end="")
+```
+
+Supported request fields:
+
+- `messages`: `system`/`developer`, `user` (text, `image_url` data URIs, `file` data URIs), `assistant` (with `tool_calls`), and `tool` result messages (function name resolved via `tool_call_id`).
+- Sampling/output: `temperature`, `top_p`, `top_k`, `max_tokens`/`max_completion_tokens`, `stop`, `response_format` (`json_object` / `json_schema`), `reasoning_effort` (mapped to the Gemini thinkingLevel).
+- Tools: `tools` (function declarations) and `tool_choice` (`auto`/`none`/`required`/specific function).
+- Streaming: `stream` and `stream_options.include_usage` (the final frame carries `usage`).
+- Gemini 3 tool calls return the opaque thought signature in `tool_calls[].extra_content.google.thought_signature`; clients must preserve it unchanged in the next request.
+
+Notes: thinking content is returned in `reasoning_content` (incremental frames when streaming); errors use the OpenAI envelope `{"error": {"message", "type", "code"}}`; authentication matches the Gemini routes (`Authorization: Bearer` or `x-api-key`). Remote image URLs are not supported — use data URIs instead.
 
 ## 🌐 WebUI
 

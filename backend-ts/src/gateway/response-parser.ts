@@ -41,7 +41,40 @@ function integer(value: unknown): number {
 
 function decodeWireValue(value: unknown): unknown {
   if (!Array.isArray(value)) return value;
+  // google.protobuf.Value uses struct_value at slot 5 and list_value at slot 6.
+  // Keep accepting the legacy slot-2 list/object shapes emitted by older
+  // captures, but prefer the canonical Struct layout when replaying calls.
+  if (
+    value.length >= 6
+    && value[0] == null
+    && value[1] == null
+    && value[2] == null
+    && value[3] == null
+    && value[4] == null
+    && Array.isArray(value[5])
+  ) {
+    const encodedValues = value[5];
+    const values = encodedValues.length === 1
+      && Array.isArray(encodedValues[0])
+      && (encodedValues[0].length === 0 || Array.isArray(encodedValues[0][0]))
+      ? encodedValues[0]
+      : encodedValues;
+    return values.map(decodeWireValue);
+  }
+  if (
+    value.length >= 5
+    && value[0] == null
+    && value[1] == null
+    && value[2] == null
+    && value[3] == null
+    && Array.isArray(value[4])
+  ) {
+    return decodeArgumentPairs(value[4]);
+  }
   if (value.length >= 2 && value[0] == null && Array.isArray(value[1])) return decodeArgumentPairs(value[1]);
+  // JSPB number_value 的 int64/float 表示：[null, value] 或 [null, lo, hi]。
+  // 不还原成 number 会把数字以数组形式带进 OpenAI 响应，客户端回传后再次编码错位。
+  if (value.length >= 2 && value[0] == null && typeof value[1] === "number") return value[1];
   if (value.length >= 3 && value[0] == null && value[1] == null) {
     return Array.isArray(value[2]) ? value[2].map(decodeWireValue) : value[2];
   }

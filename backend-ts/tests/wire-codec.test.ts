@@ -40,6 +40,32 @@ describe("AI Studio wire codec", () => {
     assert.deepEqual(decoded[0]?.parts[0]?.functionCall, ["weather", [[["city", [null, null, "上海"]]]], "call_1"]);
     assert.equal(decoded[0]?.parts[0]?.thoughtSignature, "sig");
   });
+  it("encodes function-call object and list arguments as Struct values", () => {
+    const encoded = encodePart({
+      functionCall: [
+        "configure",
+        {
+          config: { mode: "test" },
+          values: ["one", "two"],
+          count: 2,
+          enabled: true,
+          empty: null,
+        },
+        "call_1",
+      ],
+    });
+    assert.deepEqual(encoded[10], [
+      "configure",
+      [[
+        ["config", [null, null, null, null, [[["mode", [null, null, "test"]]]]]],
+        ["values", [null, null, null, null, null, [[[null, null, "one"], [null, null, "two"]]]]],
+        ["count", [null, 2]],
+        ["enabled", [null, null, null, true]],
+        ["empty", [0]],
+      ]],
+      "call_1",
+    ]);
+  });
 
   it("encodes function responses as protobuf Struct messages", () => {
     const encoded = encodePart({ functionResponse: ["weather", { result: { temperature: "28C" } }, "call_1"] });

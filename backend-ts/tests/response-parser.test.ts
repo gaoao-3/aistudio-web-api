@@ -35,4 +35,24 @@ describe("AI Studio response parser", () => {
     });
     assert.equal(part.thoughtSignature, "signature");
   });
+  it("decodes canonical Struct object and list arguments", () => {
+    const call = [
+      "configure",
+      [[
+        ["config", [null, null, null, null, [[["mode", [null, null, "test"]]]]]],
+        ["values", [null, null, null, null, null, [[[null, null, "one"], [null, null, "two"]]]]],
+      ]],
+      "call_1",
+    ];
+    const rawPart = Array(15).fill(null) as unknown[];
+    rawPart[10] = call;
+    const chunk = [[[[[rawPart], "model"]]], null, [1, 1, 2], null, null, null, null, "resp"];
+    const parsed = parseAIStudioResponse(JSON.stringify([[chunk]]));
+    const part = parsed.candidate.parts.find(item => "functionCall" in item)!;
+    assert.deepEqual(part.functionCall, {
+      name: "configure",
+      args: { config: { mode: "test" }, values: ["one", "two"] },
+      id: "call_1",
+    });
+  });
 });

@@ -68,6 +68,7 @@ flowchart TD
 | | 能力 | 说明 |
 | :---: | --- | --- |
 | ⚡ | **Gemini 原生接口** | `generateContent` 非流式、`streamGenerateContent` SSE 流式、`countTokens` 权威 token 计数 |
+| 🤝 | **OpenAI 兼容接口** | `/v1/chat/completions` 非流式与 SSE 流式（`data: [DONE]` 收尾）及 `/v1/models`，OpenAI SDK / One-API / New-API 可直接对接 |
 | 🖼️ | **多模态输入** | 图片、音频、视频、PDF、文本和常见代码文件；支持 `inlineData` 与 Google Files `fileData` |
 | 🛠️ | **原生工具** | WebUI 可使用 Google 搜索、代码执行、Google Maps、URL Context；API 支持完整的原生 Function Calling 链路（声明 → `functionCall` → 客户端执行 → `functionResponse` 回传 → 最终回答） |
 | 🧠 | **思考与统计** | 思考摘要、SSE 增量、token 用量和按模型统计 |
@@ -197,6 +198,8 @@ API 请求中的内置原生工具声明会被移除，不会发送到 AI Studio
 | `POST` | `/v1beta/models/{model}:generateContent` | Gemini 原生非流式生成 |
 | `POST` | `/v1beta/models/{model}:streamGenerateContent` | Gemini 原生 SSE 流式生成 |
 | `POST` | `/v1beta/models/{model}:countTokens` | 权威 token 计数，返回 `{"totalTokens": N}` |
+| `GET` | `/v1/models` | OpenAI 兼容模型列表（`object: "list"`） |
+| `POST` | `/v1/chat/completions` | OpenAI 兼容对话补全（非流式 + SSE 流式） |
 | `GET` / `POST` / `PUT` / `DELETE` | `/api-keys` | 创建、查看、更新权限和删除本地服务密钥 |
 | `GET` | `/stats` | 用量统计 |
 | `GET` / `PUT` | `/config/runtime` | 运行时配置 |
@@ -354,6 +357,56 @@ Gemini 3 的无状态多轮请求必须保留模型返回的 `thought` 部分及
 
 ---
 
+### OpenAI 兼容接口
+
+服务同时暴露 OpenAI 协议端点（参考 AIStudio2API 的适配方式），可直接接入 OpenAI SDK、One-API、New-API 等生态：
+
+| 方法 | 路径 | 说明 |
+| :---: | --- | --- |
+| `GET` | `/v1/models` | 模型列表，返回 `{"object": "list", "data": [...]}` |
+| `POST` | `/v1/chat/completions` | 对话补全；`"stream": true` 时返回 SSE `chat.completion.chunk` 帧并以 `data: [DONE]` 结束 |
+
+非流式调用：
+
+```bash
+curl http://localhost:3006/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <AISTUDIO_API_KEY>" \
+  -d '{
+    "model": "gemini-3-flash-preview",
+    "messages": [{"role": "user", "content": "你好"}],
+    "temperature": 0.7,
+    "max_tokens": 1024
+  }'
+```
+
+流式调用（SDK 用法，`base_url` 指向本服务即可）：
+
+```python
+from openai import OpenAI
+
+client = OpenAI(api_key="<AISTUDIO_API_KEY>", base_url="http://localhost:3006/v1")
+stream = client.chat.completions.create(
+    model="gemini-3-flash-preview",
+    messages=[{"role": "user", "content": "你好"}],
+    stream=True,
+    stream_options={"include_usage": True},
+)
+for chunk in stream:
+    print(chunk.choices[0].delta.content or "", end="")
+```
+
+已支持的请求字段：
+
+- `messages`：`system`/`developer`、`user`（文本、`image_url` data URI、`file` data URI）、`assistant`（含 `tool_calls`）、`tool` 结果回传（按 `tool_call_id` 匹配函数名）。
+- 采样与输出：`temperature`、`top_p`、`top_k`、`max_tokens`/`max_completion_tokens`、`stop`、`response_format`（`json_object` / `json_schema`）、`reasoning_effort`（映射为 Gemini thinkingLevel）。
+- 工具：`tools`（function 声明）、`tool_choice`（`auto`/`none`/`required`/指定函数）。
+- 流式：`stream`、`stream_options.include_usage`（末帧携带 `usage`）。
+- Gemini 3 工具调用会在 `tool_calls[].extra_content.google.thought_signature` 中返回思考签名；客户端必须在下一轮请求中原样保留该字段。
+
+说明：思考内容以 `reasoning_content` 字段返回（流式为增量帧）；错误统一返回 OpenAI 风格 `{"error": {"message", "type", "code"}}`；鉴权与 Gemini 路由一致（`Authorization: Bearer` 或 `x-api-key`）。远程图片 URL 不支持，请改用 data URI。
+
+---
 ## 🖥️ WebUI
 
 | 页面 | 能力 |

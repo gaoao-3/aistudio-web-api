@@ -9,6 +9,13 @@ import { NativeBackendBridge } from "./bridge/native-bridge.js";
 import { RuntimeConfigStore } from "./config/runtime-config.js";
 import { settings } from "./config.js";
 import { HttpError, errorDetail } from "./http/errors.js";
+import {
+  OpenAiRequestError,
+  convertChatRequest,
+  createChatStreamEncoder,
+  toChatCompletion,
+  type ConvertedChatRequest,
+} from "./openai/convert.js";
 type BuiltinToolName = "google_search" | "code_execution" | "google_maps" | "url_context";
 
 interface AppServices {
@@ -149,6 +156,45 @@ async function sendStream(
     reply.raw.off("close", onClose);
     if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
   }
+}
+function parseSseDataPayloads(raw: string): Record<string, unknown>[] {
+  const payloads: Record<string, unknown>[] = [];
+  for (const line of raw.split(/\r?\n/u)) {
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice("data:".length).trim();
+    if (!payload || payload === "[DONE]") continue;
+    try {
+      const parsed: unknown = JSON.parse(payload);
+      if (isRecord(parsed)) payloads.push(parsed);
+    } catch { /* 跳过无法解析的帧 */ }
+  }
+  return payloads;
+}
+
+function openAiErrorBody(error: unknown): { status: number; body: Record<string, unknown> } {
+  if (error instanceof OpenAiRequestError) {
+    return {
+      status: error.statusCode,
+      body: { error: { message: error.message, type: "invalid_request_error", ...(error.code ? { code: error.code } : {}) } },
+    };
+  }
+  if (error instanceof HttpError || error instanceof BridgeError) {
+    const detail: unknown = error.detail;
+    const record = isRecord(detail) ? detail : {};
+    return {
+      status: error.statusCode,
+      body: {
+        error: {
+          message: typeof detail === "string" ? detail : typeof record.message === "string" ? record.message : "请求失败",
+          type: typeof record.type === "string" ? record.type : "server_error",
+        },
+      },
+    };
+  }
+  return {
+    status: 500,
+    body: { error: { message: error instanceof Error ? error.message : String(error), type: "server_error" } },
+  };
 }
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
@@ -381,15 +427,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     return { models: FALLBACK_MODELS.map(modelCard), source: "fallback" };
   }
 
+  app.get("/v1beta/models", async () => availableModels());
+  app.get<{ Params: { "*": string } }>("/v1beta/models/*", async (request) => {
+    const id = request.params["*"].replace(/^models\//u, "");
+    const name = `models/${id}`;
+    const model = (await availableModels()).models.find((item) => item.name === name);
+    if (!model) throw new HttpError(404, errorDetail(`Model '${id}' not found`, "not_found"));
+    return model;
+  });
   for (const version of ["v1", "v1beta"] as const) {
-    app.get(`/${version}/models`, async () => availableModels());
-    app.get<{ Params: { "*": string } }>(`/${version}/models/*`, async (request) => {
-      const id = request.params["*"].replace(/^models\//u, "");
-      const name = `models/${id}`;
-      const model = (await availableModels()).models.find((item) => item.name === name);
-      if (!model) throw new HttpError(404, errorDetail(`Model '${id}' not found`, "not_found"));
-      return model;
-    });
     app.post<{ Params: { "*": string } }>(`/${version}/*`, async (request, reply) => {
       const target = request.params["*"];
       const match = /^(.*):(generateContent|streamGenerateContent|countTokens)$/u.exec(target);
@@ -407,7 +453,60 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       return bridge.request("generate", { model, body, stream: false });
     });
   }
-
+  app.post("/v1/chat/completions", async (request, reply) => {
+    let converted: ConvertedChatRequest;
+    try {
+      converted = convertChatRequest(bodyRecord(request.body));
+    } catch (error) {
+      const failure = openAiErrorBody(error);
+      return reply.status(failure.status).send(failure.body);
+    }
+    if (!converted.stream) {
+      try {
+        const geminiResponse = await bridge.request<unknown>("generate", {
+          model: converted.model,
+          body: converted.geminiBody,
+          stream: false,
+        });
+        return toChatCompletion(geminiResponse, converted.model);
+      } catch (error) {
+        const failure = openAiErrorBody(error);
+        return reply.status(failure.status).send(failure.body);
+      }
+    }
+    const encoder = createChatStreamEncoder(converted.model, converted.includeUsage);
+    await sendStream(reply, async (onChunk, signal) => {
+      try {
+        const finalResponse = await bridge.request<unknown>(
+          "generate",
+          { model: converted.model, body: converted.geminiBody, stream: true },
+          (raw) => {
+            for (const payload of parseSseDataPayloads(raw)) {
+              for (const frame of encoder.feed(payload)) onChunk(frame);
+            }
+          },
+          signal,
+        );
+        for (const frame of encoder.finish(finalResponse)) onChunk(frame);
+      } catch (error) {
+        if ((error as Error).name === "AbortError") throw error;
+        onChunk(`data: ${JSON.stringify(openAiErrorBody(error).body)}\n\n`);
+      }
+    });
+    return;
+  });
+  app.get("/v1/models", async () => {
+    const { models } = await availableModels();
+    return {
+      object: "list",
+      data: models.map((model) => ({
+        id: typeof model.name === "string" ? model.name.replace(/^models\//u, "") : "unknown",
+        object: "model",
+        created: Math.floor(Date.now() / 1000),
+        owned_by: "google-ai-studio",
+      })),
+    };
+  });
   app.addHook("onClose", async () => bridge.stop());
   await bridge.start();
   return app;

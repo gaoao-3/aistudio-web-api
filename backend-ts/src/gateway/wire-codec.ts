@@ -86,9 +86,10 @@ function wireArgs(value: Record<string, unknown>): unknown[] {
 }
 
 function wireArgumentValue(value: unknown): unknown[] {
-  if (isRecord(value)) return [null, wireArgs(value)];
-  if (Array.isArray(value)) return [null, null, value.map(wireArgumentValue)];
-  return [null, null, value];
+  // FunctionCall.args is a google.protobuf.Struct. Its nested values use
+  // the same Value oneof layout as FunctionResponse.response, including
+  // list_value at slot 6 and struct_value at slot 5.
+  return wireStructValue(value);
 }
 
 // google.protobuf.Struct encoding in JSPB positional form: pairs of
@@ -103,7 +104,7 @@ function wireStructValue(value: unknown): unknown[] {
   if (typeof value === "number") return [null, value];
   if (typeof value === "string") return [null, null, value];
   if (typeof value === "boolean") return [null, null, null, value];
-  if (Array.isArray(value)) return [null, null, null, null, null, value.map(wireStructValue)];
+  if (Array.isArray(value)) return [null, null, null, null, null, [value.map(wireStructValue)]];
   if (isRecord(value)) return [null, null, null, null, [wireStructPairs(value)]];
   return [null, null, String(value)];
 }
