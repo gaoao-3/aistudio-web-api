@@ -12,8 +12,8 @@ importers:
         specifier: ^10.1.3
         version: 10.1.3
       cloakbrowser:
-        specifier: ^0.5.8
-        version: 0.5.8(playwright-core@1.62.1)
+        specifier: ^0.5.9
+        version: 0.5.9(playwright-core@1.62.1)
       dotenv:
         specifier: ^17.2.1
         version: 17.4.2
@@ -389,8 +389,8 @@ packages:
     resolution: {integrity: sha512-+IxzY9BZOQd/XuYPRmrvEVjF/nqj5kgT4kEq7VofrDoM1MxoRjEWkrCC3EtLi59TVawxTAn+orJwFQcrqEN1+g==}
     engines: {node: '>=18'}
 
-  cloakbrowser@0.5.8:
-    resolution: {integrity: sha512-k69iAhtzki3ajccUZlVNJvPxrrZXas8LRQYR5Vdv8lpsoAW+V8mV2lBzg6KfuQpKPGdZ/1fbF/17ydPPHs9Y5Q==}
+  cloakbrowser@0.5.9:
+    resolution: {integrity: sha512-vMLX6sxLoA9OWutHrT1h7fYKPm/YZdGcPaanOTXMimG4U9jg9wc2hqI/VsFo9Nzel/ab82nWZhfQal18tKw6pQ==}
     engines: {node: '>=20.0.0'}
     hasBin: true
     peerDependencies:
@@ -865,7 +865,7 @@ snapshots:
 
   chownr@3.0.0: {}
 
-  cloakbrowser@0.5.8(playwright-core@1.62.1):
+  cloakbrowser@0.5.9(playwright-core@1.62.1):
     dependencies:
       tar: 7.5.22
     optionalDependencies:
