@@ -304,7 +304,7 @@ curl http://localhost:3006/v1beta/models/gemini-3-flash-preview:countTokens \
 Gemini 3 的无状态多轮请求必须保留模型返回的 `thought` 部分及 `thoughtSignature`；函数调用结果使用标准 `functionResponse` 回传，服务会自动携带首轮的 `responseId` 并固定到原账号完成原生续接。
 
 > [!IMPORTANT]
-> 服务不会把被上游拒绝的工具结果改写成文本重放，也不会为上游空响应自动补写提示词；AI Studio 返回非 2xx 时直接透出上游错误，返回成功状态但候选为空时返回 `502`，便于按原始请求排查。
+> 服务不会把被上游拒绝的工具结果改写成文本重放，也不会为上游空响应自动补写提示词；上游返回带有终止原因（例如安全拦截）的空候选时保留原始 `finishReason`，只有无法解析且没有终止原因的空响应才返回 `502`，便于按原始请求排查。
 
 #### Function Calling 完整往返
 

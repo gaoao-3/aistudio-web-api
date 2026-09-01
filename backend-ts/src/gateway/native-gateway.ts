@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { runtimeRoot } from "../config.js";
 import { NativeBrowserSession, type AuthRefreshResult } from "./browser-session.js";
 import { normalizeGeminiRequest, type NormalizedGeminiRequest } from "./gemini-normalize.js";
-import { parseAIStudioResponse, toGeminiResponse } from "./response-parser.js";
+import { parseAIStudioResponse, toGeminiResponse, type ParsedAIStudioResponse } from "./response-parser.js";
 import { encodeCountTokensBody, rewriteWireBody } from "./wire-codec.js";
 import type { AistudioContent, AistudioPart } from "./wire-codec.js";
 import { fetchCountTokens, fetchModelCatalog } from "./model-catalog.js";
@@ -33,7 +33,7 @@ export function partitionMixedTools(tools: unknown[][] | null): ToolGroups {
   return { builtins, functions };
 }
 
-function bridgeBuiltinResult(contents: readonly AistudioContent[], parsed: ReturnType<typeof parseAIStudioResponse>): AistudioContent[] {
+function bridgeBuiltinResult(contents: readonly AistudioContent[], parsed: ParsedAIStudioResponse): AistudioContent[] {
   const parts: AistudioPart[] = [];
   for (const part of parsed.candidate.parts) {
     if (typeof part.text === "string") {
@@ -52,9 +52,13 @@ function bridgeBuiltinResult(contents: readonly AistudioContent[], parsed: Retur
   ];
 }
 
-function emptyCandidateResponse(parsed: { readonly candidate: { readonly text: string; readonly parts: readonly Record<string, unknown>[] } }): boolean {
-  return !parsed.candidate.text.trim()
-    && !parsed.candidate.parts.some(part => "functionCall" in part || "inlineData" in part);
+function emptyCandidateResponse(parsed: ParsedAIStudioResponse): boolean {
+  const { candidate } = parsed;
+  return !candidate.text.trim()
+    && !candidate.thinking.trim()
+    && !candidate.parts.some(part => "functionCall" in part || "inlineData" in part)
+    // A successful safety/terminal response can legitimately contain no parts.
+    && candidate.finishReason === undefined;
 }
 
 function hasFunctionResponse(contents: readonly AistudioContent[]): boolean {

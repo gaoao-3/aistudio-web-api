@@ -8,6 +8,31 @@ interface ParsedPart {
   readonly functionResponse?: Record<string, unknown>;
   readonly thoughtSignature?: string;
 }
+const FINISH_REASON_NAMES: Readonly<Record<number, string>> = Object.freeze({
+  0: "OTHER",
+  1: "STOP",
+  2: "MAX_TOKENS",
+  3: "SAFETY",
+  4: "RECITATION",
+  5: "OTHER",
+  6: "BLOCKLIST",
+  7: "PROHIBITED_CONTENT",
+  8: "SPII",
+  9: "MALFORMED_FUNCTION_CALL",
+  10: "IMAGE_SAFETY",
+  11: "IMAGE_PROHIBITED_CONTENT",
+  12: "IMAGE_RECITATION",
+  13: "LANGUAGE",
+  14: "NO_IMAGE",
+  15: "IMAGE_OTHER",
+});
+
+function finishReasonName(candidate: ParsedCandidate): string {
+  if (candidate.parts.some(part => "functionCall" in part)) return "FUNCTION_CALL";
+  if (candidate.finishReason === undefined) return "STOP";
+  return FINISH_REASON_NAMES[candidate.finishReason] ?? "OTHER";
+}
+
 
 export interface ParsedCandidate {
   text: string;
@@ -221,7 +246,7 @@ export function toGeminiResponse(parsed: ParsedAIStudioResponse): Record<string,
   return {
     candidates: [{
       content: { role: "model", parts: parsed.candidate.parts },
-      finishReason: parsed.candidate.parts.some(part => "functionCall" in part) ? "FUNCTION_CALL" : "STOP",
+      finishReason: finishReasonName(parsed.candidate),
       ...(parsed.candidate.safetyRatings ? { safetyRatings: parsed.candidate.safetyRatings } : {}),
     }],
     usageMetadata: {
