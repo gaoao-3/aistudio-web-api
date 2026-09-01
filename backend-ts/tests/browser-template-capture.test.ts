@@ -24,7 +24,7 @@ describe("AI Studio generation template capture", () => {
     );
   });
 
-  it("rejects similarly named quota and token-count RPCs", () => {
+  it("rejects quota, token-count, and unqualified RPCs", () => {
     assert.equal(
       isGenerateRequestUrl(
         "https://aisandbox-pa.googleapis.com/$rpc/google.internal.aistudio.v1.GenerativeService/StreamGenerateContentPerUserQuota?key=test",
@@ -33,7 +33,19 @@ describe("AI Studio generation template capture", () => {
     );
     assert.equal(
       isGenerateRequestUrl(
+        "https://aisandbox-pa.googleapis.com/$rpc/google.internal.aistudio.v1.GenerativeService/StreamGenerateContentPerUserQuota/?key=test",
+      ),
+      false,
+    );
+    assert.equal(
+      isGenerateRequestUrl(
         "https://aisandbox-pa.googleapis.com/$rpc/google.internal.aistudio.v1.GenerativeService.CountTokens?key=test",
+      ),
+      false,
+    );
+    assert.equal(
+      isGenerateRequestUrl(
+        "https://aisandbox-pa.googleapis.com/$rpc/GenerativeService.StreamGenerateContent?key=test",
       ),
       false,
     );
