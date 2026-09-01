@@ -86,7 +86,7 @@ function stableFingerprint(profileDir: string): number {
   return 10_000 + (Number.parseInt(prefix, 16) % 90_000);
 }
 
-const GENERATE_RPC_PATH = /(?:^|\/)(?:[A-Za-z0-9_-]+\.)+GenerativeService(?:\/|\.)(?:Stream)?GenerateContent$/u;
+const GENERATE_RPC_PATH = /(?:^|\/)(?:[A-Za-z0-9_-]+\.)+(?:GenerativeService|MakerSuiteService)(?:\/|\.)(?:Stream)?GenerateContent$/u;
 
 export function isGenerateRequestUrl(rawUrl: string): boolean {
   try {

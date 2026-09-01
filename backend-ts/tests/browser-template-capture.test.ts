@@ -22,6 +22,12 @@ describe("AI Studio generation template capture", () => {
       ),
       true,
     );
+    assert.equal(
+      isGenerateRequestUrl(
+        "https://alkalimakersuite-pa.clients6.google.com/$rpc/google.internal.alkali.applications.makersuite.v1.MakerSuiteService/GenerateContent?key=test",
+      ),
+      true,
+    );
   });
 
   it("rejects quota, token-count, and unqualified RPCs", () => {
