@@ -61,7 +61,7 @@ function isoOrNull(value: number): string | null {
 
 export function isRateLimitedError(error: unknown): boolean {
   const message = String(error instanceof Error ? error.message : error).toLowerCase();
-  return /(?:\b429\b|too many requests|rate[ -]?limit|resource exhausted|quota exceeded|配额|限流)/u.test(message);
+  return /(?:\b429\b|too many requests|rate[ -]?limit|resource exhausted|quota exceeded|peruserquota|配额|限流)/u.test(message);
 }
 
 /**

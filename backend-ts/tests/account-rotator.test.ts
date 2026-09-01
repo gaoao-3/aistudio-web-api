@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { AccountRotator } from "../src/accounts/account-rotator.js";
+import { AccountRotator, isRateLimitedError } from "../src/accounts/account-rotator.js";
 import { AccountStore } from "../src/accounts/account-store.js";
 
 async function makeStore(directory: string): Promise<AccountStore> {
@@ -161,6 +161,18 @@ describe("permission denied combos", () => {
     assert.equal(isPermissionDeniedError(new Error('AI Studio upstream returned HTTP 403: [,[7,"The caller does not have permission"]]')), true);
     assert.equal(isPermissionDeniedError(new Error("AI Studio upstream returned HTTP 429: quota exceeded")), false);
     assert.equal(isPermissionDeniedError(new Error("Google cookies are expired")), false);
+  });
+  it("classifies per-user quota routing errors as rate limited", () => {
+    assert.equal(
+      isRateLimitedError(
+        new Error("AI Studio upstream returned HTTP 404: [,[5,\"Ambiguous request for service '' and method '/GenerativeService.StreamGenerateContentPerUserQuota'.\"]]"),
+      ),
+      true,
+    );
+    assert.equal(
+      isRateLimitedError(new Error("AI Studio upstream returned HTTP 404: Requested entity was not found.")),
+      false,
+    );
   });
 });
 
