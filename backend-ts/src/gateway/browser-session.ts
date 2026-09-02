@@ -17,6 +17,12 @@ export interface CapturedTemplate {
   readonly timezone?: string;
 }
 
+export interface BrowserReplayResponse {
+  readonly status: number;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly body: string;
+}
+
 export interface SnapshotContent {
   readonly parts?: readonly {
     readonly text?: unknown;
@@ -65,6 +71,7 @@ export interface BrowserSessionHealth {
 interface PageStreamEvent {
   readonly type: "idle" | "status" | "chunk" | "done" | "error" | "aborted";
   readonly status?: number;
+  readonly headers?: Readonly<Record<string, string>>;
   readonly text?: string;
   readonly message?: string;
   readonly name?: string;
@@ -340,7 +347,7 @@ export class NativeBrowserSession {
     });
   }
 
-  async replay(body: string, timeoutMs = settings.browserTimeoutMs, signal?: AbortSignal): Promise<{ status: number; body: string }> {
+  async replay(body: string, timeoutMs = settings.browserTimeoutMs, signal?: AbortSignal): Promise<BrowserReplayResponse> {
     return this.runExclusive(async () => {
       if (signal?.aborted) throw Object.assign(new Error("Native gateway request aborted"), { name: "AbortError" });
       const page = await this.ensureBotGuard();
@@ -369,7 +376,7 @@ export class NativeBrowserSession {
               body: args.body,
               signal: controller.signal,
             });
-            return { status: response.status, body: await response.text() };
+            return { status: response.status, headers: Object.fromEntries(response.headers.entries()), body: await response.text() };
           } finally {
             clearTimeout(timer);
             delete fetches[args.requestId];
@@ -389,7 +396,7 @@ export class NativeBrowserSession {
     onChunk: (chunk: string) => void,
     signal?: AbortSignal,
     timeoutMs = settings.browserTimeoutMs,
-  ): Promise<{ status: number; body: string }> {
+  ): Promise<BrowserReplayResponse> {
     return this.runExclusive(async () => {
       const page = await this.ensureBotGuard();
       const template = this.firstTemplate();
@@ -428,7 +435,7 @@ export class NativeBrowserSession {
               body: args.body,
               signal: state.controller.signal,
             });
-            push({ type: "status", status: response.status });
+            push({ type: "status", status: response.status, headers: Object.fromEntries(response.headers.entries()) });
             if (!response.body) {
               const text = await response.text();
               if (text) push({ type: "chunk", text });
@@ -456,6 +463,7 @@ export class NativeBrowserSession {
       await startPageFetch();
 
       let status = 0;
+      let responseHeaders: Readonly<Record<string, string>> = {};
       let retriedNetworkError = false;
       let responseBody = "";
       const pending: string[] = [];
@@ -491,6 +499,7 @@ export class NativeBrowserSession {
           if (event.type === "idle") continue;
           if (event.type === "status") {
             status = event.status ?? 0;
+            responseHeaders = event.headers ?? {};
             if (status >= 200 && status < 300) {
               for (const chunk of pending.splice(0)) onChunk(chunk);
             }
@@ -503,7 +512,7 @@ export class NativeBrowserSession {
             else if (status === 0) pending.push(text);
             continue;
           }
-          if (event.type === "done") return { status, body: responseBody };
+          if (event.type === "done") return { status, headers: responseHeaders, body: responseBody };
           if (event.type === "aborted") {
             throw Object.assign(new Error("Native gateway request aborted"), { name: "AbortError" });
           }

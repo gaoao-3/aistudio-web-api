@@ -1,5 +1,5 @@
 import { BridgeError, type BackendBridge } from "./backend-bridge.js";
-import { NativeGateway, type NativeGenerationOptions } from "../gateway/native-gateway.js";
+import { NativeGateway, type NativeGenerationOptions, type UpstreamQuotaInfo } from "../gateway/native-gateway.js";
 import { settings } from "../config.js";
 import { AccountStore } from "../accounts/account-store.js";
 import { AccountRotator, isAuthExpiredError, isPermissionDeniedError, isRateLimitedError, type RotationMode } from "../accounts/account-rotator.js";
@@ -17,6 +17,21 @@ import { NativeContinuationStore, type NativeFunctionRef } from "./native-contin
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function readUpstreamQuotaInfo(error: unknown): UpstreamQuotaInfo | undefined {
+  if (!isRecord(error) || !isRecord(error.quotaInfo)) return undefined;
+  const info = error.quotaInfo;
+  const reason = info.reason;
+  if (reason !== "quota_exceeded" && reason !== "per_user_quota" && reason !== "rate_limit") return undefined;
+  const retryAfterMs = info.retryAfterMs;
+  const quotaMetric = info.quotaMetric;
+  const quotaId = info.quotaId;
+  return {
+    reason,
+    ...(typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs) && retryAfterMs >= 0 ? { retryAfterMs } : {}),
+    ...(typeof quotaMetric === "string" && quotaMetric ? { quotaMetric } : {}),
+    ...(typeof quotaId === "string" && quotaId ? { quotaId } : {}),
+  };
 }
 
 interface GenerationRouting {
@@ -649,6 +664,7 @@ export class NativeBackendBridge implements BackendBridge {
       : undefined;
     let lastError: unknown;
     let rateLimitedAttempts = 0;
+    let lastQuotaInfo: UpstreamQuotaInfo | undefined;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       if (signal?.aborted) throw Object.assign(new Error("Native gateway request aborted"), { name: "AbortError" });
       const account = attempt === 0 && preferredAccount
@@ -688,6 +704,7 @@ export class NativeBackendBridge implements BackendBridge {
         lastError = error;
         if (isRateLimitedError(error)) {
           rateLimitedAttempts += 1;
+          lastQuotaInfo = readUpstreamQuotaInfo(error) ?? lastQuotaInfo;
           this.rotator.recordRateLimited(account.id);
           // 429 是账号频率问题，不重建浏览器；进入冷却，并在以后扩容时优先淘汰。
           this.gatewayEvictPriority.add(account.id);
@@ -764,9 +781,22 @@ export class NativeBackendBridge implements BackendBridge {
       const scope = attempted.size === all.length
         ? `all ${all.length} configured accounts`
         : `all ${attempted.size} attempted accounts`;
+      const retryAfterSeconds = lastQuotaInfo?.retryAfterMs !== undefined
+        ? Math.ceil(lastQuotaInfo.retryAfterMs / 1000)
+        : undefined;
+      const message = `AI Studio quota unavailable: ${scope} returned rate-limit responses for ${model}.`
+        + (retryAfterSeconds !== undefined
+          ? ` Retry after approximately ${retryAfterSeconds} seconds.`
+          : " Wait for quota reset or add an account with available quota.");
       throw new BridgeError(429, {
-        message: `AI Studio quota unavailable: ${scope} returned rate-limit responses for ${model}. Wait for quota reset or add an account with available quota.`,
+        message,
         type: "rate_limit_error",
+        ...(lastQuotaInfo ? {
+          quota_reason: lastQuotaInfo.reason,
+          ...(lastQuotaInfo.retryAfterMs !== undefined ? { retry_after_ms: lastQuotaInfo.retryAfterMs } : {}),
+          ...(lastQuotaInfo.quotaMetric ? { quota_metric: lastQuotaInfo.quotaMetric } : {}),
+          ...(lastQuotaInfo.quotaId ? { quota_id: lastQuotaInfo.quotaId } : {}),
+        } : {}),
       });
     }
     throw lastError ?? new Error("没有可用的 Google 账号");

@@ -1,7 +1,7 @@
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { runtimeRoot } from "../config.js";
-import { NativeBrowserSession, type AuthRefreshResult } from "./browser-session.js";
+import { NativeBrowserSession, type AuthRefreshResult, type BrowserReplayResponse } from "./browser-session.js";
 import { normalizeGeminiRequest, type NormalizedGeminiRequest } from "./gemini-normalize.js";
 import { parseAIStudioResponse, toGeminiResponse, type ParsedAIStudioResponse } from "./response-parser.js";
 import { encodeCountTokensBody, rewriteWireBody } from "./wire-codec.js";
@@ -15,6 +15,13 @@ import type { AccountProfile } from "../accounts/account-profile.js";
 export interface NativeGenerationOptions {
   readonly previousResponseId?: string | null;
   readonly onResponseId?: (responseId: string) => void;
+}
+
+export interface UpstreamQuotaInfo {
+  readonly reason: "quota_exceeded" | "per_user_quota" | "rate_limit";
+  readonly retryAfterMs?: number;
+  readonly quotaMetric?: string;
+  readonly quotaId?: string;
 }
 
 interface ToolGroups {
@@ -32,6 +39,62 @@ export function partitionMixedTools(tools: unknown[][] | null): ToolGroups {
   for (const tool of tools ?? []) (isFunctionTool(tool) ? functions : builtins).push(tool);
   return { builtins, functions };
 }
+function parseRetryAfter(body: string, headers?: Readonly<Record<string, string>>): number | undefined {
+  const header = Object.entries(headers ?? {}).find(([name]) => name.toLowerCase() === "retry-after")?.[1]?.trim();
+  if (header) {
+    if (/^\d+(?:\.\d+)?$/u.test(header)) {
+      const seconds = Number(header);
+      if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1000);
+    }
+    const timestamp = Date.parse(header);
+    if (Number.isFinite(timestamp)) return Math.max(0, timestamp - Date.now());
+  }
+  const milliseconds = /(?:retryAfterMs|retry_after_ms)\D+(\d+(?:\.\d+)?)/iu.exec(body);
+  if (milliseconds) {
+    const value = Number(milliseconds[1]);
+    if (Number.isFinite(value) && value >= 0) return Math.ceil(value);
+  }
+  const delay = /(?:retryDelay|retry[-_ ]?after|retry_after)\D+(\d+(?:\.\d+)?)\s*(milliseconds?|ms|seconds?|s)?/iu.exec(body);
+  if (!delay) return undefined;
+  const value = Number(delay[1]);
+  if (!Number.isFinite(value) || value < 0) return undefined;
+  return Math.ceil(value * (/^(?:milliseconds?|ms)$/iu.test(delay[2] ?? "") ? 1 : 1000));
+}
+
+function bodyField(body: string, name: "quotaMetric" | "quota_metric" | "quotaId" | "quota_id"): string | undefined {
+  const match = new RegExp(`["']?${name}["']?\\s*[:=]\\s*["']?([^"',}\\s]+)`, "iu").exec(body);
+  return match?.[1];
+}
+
+export function detectUpstreamQuota(
+  status: number,
+  body: string,
+  headers?: Readonly<Record<string, string>>,
+): UpstreamQuotaInfo | undefined {
+  const lower = body.toLowerCase();
+  const perUserQuota = lower.includes("peruserquota");
+  const quotaExceeded = /resource[_ ]exhausted|quota exceeded|exceeded your current quota|quota[_ ]failure/u.test(lower);
+  const rateLimited = status === 429 || /too many requests|rate[- ]?limit/u.test(lower);
+  if (!perUserQuota && !quotaExceeded && !rateLimited) return undefined;
+  const retryAfterMs = parseRetryAfter(body, headers);
+  const quotaMetric = bodyField(body, "quotaMetric") ?? bodyField(body, "quota_metric");
+  const quotaId = bodyField(body, "quotaId") ?? bodyField(body, "quota_id");
+  return {
+    reason: perUserQuota ? "per_user_quota" : quotaExceeded ? "quota_exceeded" : "rate_limit",
+    ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+    ...(quotaMetric ? { quotaMetric } : {}),
+    ...(quotaId ? { quotaId } : {}),
+  };
+}
+
+function upstreamResponseError(prefix: string, response: BrowserReplayResponse): Error {
+  const quotaInfo = detectUpstreamQuota(response.status, response.body, response.headers);
+  return Object.assign(
+    new Error(`${prefix} HTTP ${response.status}: ${response.body.slice(0, 500)}`),
+    { statusCode: response.status, ...(quotaInfo ? { quotaInfo } : {}) },
+  );
+}
+
 function retryableUpstreamError(message: string, raw: string): Error {
   const responseBytes = Buffer.byteLength(raw, "utf8");
   if (process.env.AISTUDIO_DEBUG_WIRE === "1") {
@@ -58,6 +121,7 @@ function parseUpstreamResponse(raw: string): ParsedAIStudioResponse {
     throw retryableUpstreamError(error.message, raw);
   }
 }
+
 
 
 function bridgeBuiltinResult(contents: readonly AistudioContent[], parsed: ParsedAIStudioResponse): AistudioContent[] {
@@ -213,7 +277,7 @@ export class NativeGateway {
       lastWireBody = await makeBody(contents, tools, sanitizePlainText, disableThinking);
       return lastWireBody;
     };
-    const replay = async (wireBody: string): Promise<{ status: number; body: string }> => {
+    const replay = async (wireBody: string): Promise<BrowserReplayResponse> => {
       if (!onResponse) return this.session.replay(wireBody, undefined, signal);
       const parser = new IncrementalAIStudioParser();
       return this.session.replayStream(wireBody, raw => {
@@ -231,14 +295,11 @@ export class NativeGateway {
       && toolGroups.builtins.length > 0
       && toolGroups.functions.length > 0;
     const effectiveTools = emulateMixedTools ? toolGroups.functions : normalized.tools;
-    let response: { status: number; body: string };
+    let response: BrowserReplayResponse;
     if (emulateMixedTools && !hasFunctionResponse(normalized.contents)) {
       const builtinResponse = await this.session.replay(await makeLoggedBody(normalized.contents, toolGroups.builtins, false), undefined, signal);
       if (builtinResponse.status < 200 || builtinResponse.status >= 300) {
-        throw Object.assign(
-          new Error(`AI Studio built-in tool phase returned HTTP ${builtinResponse.status}: ${builtinResponse.body.slice(0, 500)}`),
-          { statusCode: builtinResponse.status },
-        );
+        throw upstreamResponseError("AI Studio built-in tool phase returned", builtinResponse);
       }
       const bridged = bridgeBuiltinResult(normalized.contents, parseUpstreamResponse(builtinResponse.body));
       response = await replay(await makeLoggedBody(bridged, toolGroups.functions, false));
@@ -246,14 +307,12 @@ export class NativeGateway {
       response = await replay(await makeLoggedBody(normalized.contents, effectiveTools, false));
     }
     if (response.status < 200 || response.status >= 300) {
+      const quotaInfo = detectUpstreamQuota(response.status, response.body, response.headers);
       // 上游拒绝时把 wire 请求体落盘，便于定位 400 类协议错误（无需手动开调试）。
       try {
-        appendFileSync(join(runtimeRoot, "data", "wire-debug.log"), JSON.stringify({ time: new Date().toISOString(), status: response.status, upstreamBody: response.body.slice(0, 2000), body: lastWireBody ? JSON.parse(lastWireBody) : null }) + "\n");
+        appendFileSync(join(runtimeRoot, "data", "wire-debug.log"), JSON.stringify({ time: new Date().toISOString(), status: response.status, ...(quotaInfo ? { quotaInfo } : {}), upstreamBody: response.body.slice(0, 2000), body: lastWireBody ? JSON.parse(lastWireBody) : null }) + "\n");
       } catch { /* debug only */ }
-      throw Object.assign(
-        new Error(`AI Studio upstream returned HTTP ${response.status}: ${response.body.slice(0, 500)}`),
-        { statusCode: response.status },
-      );
+      throw upstreamResponseError("AI Studio upstream returned", response);
     }
     const finalParsed = parseUpstreamResponse(response.body);
     if (emptyCandidateResponse(finalParsed)) {

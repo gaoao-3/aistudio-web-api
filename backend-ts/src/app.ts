@@ -51,6 +51,35 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function quotaInfoFields(info: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...(typeof info.reason === "string" ? { quota_reason: info.reason } : {}),
+    ...(typeof info.retryAfterMs === "number" && Number.isFinite(info.retryAfterMs) ? { retry_after_ms: info.retryAfterMs } : {}),
+    ...(typeof info.quotaMetric === "string" ? { quota_metric: info.quotaMetric } : {}),
+    ...(typeof info.quotaId === "string" ? { quota_id: info.quotaId } : {}),
+  };
+}
+
+function errorDetailFields(detail: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...(typeof detail.quota_reason === "string" ? { quota_reason: detail.quota_reason } : {}),
+    ...(typeof detail.retry_after_ms === "number" && Number.isFinite(detail.retry_after_ms) ? { retry_after_ms: detail.retry_after_ms } : {}),
+    ...(typeof detail.quota_metric === "string" ? { quota_metric: detail.quota_metric } : {}),
+    ...(typeof detail.quota_id === "string" ? { quota_id: detail.quota_id } : {}),
+  };
+}
+
+function upstreamErrorDetail(error: unknown): Record<string, unknown> {
+  const record = isRecord(error) ? error : {};
+  const statusCode = typeof record.statusCode === "number" ? record.statusCode : 500;
+  const quotaInfo = isRecord(record.quotaInfo) ? record.quotaInfo : undefined;
+  return {
+    message: error instanceof Error ? error.message : String(error),
+    type: statusCode === 429 || quotaInfo ? "rate_limit_error" : "server_error",
+    ...(quotaInfo ? quotaInfoFields(quotaInfo) : {}),
+  };
+}
+
 const BUILTIN_TOOL_NAMES = ["google_search", "code_execution", "google_maps", "url_context"] as const satisfies readonly BuiltinToolName[];
 // The marker is added by the same-origin WebUI. API keys authenticate requests
 // but no longer grant or configure access to AI Studio's built-in tools.
@@ -187,13 +216,15 @@ function openAiErrorBody(error: unknown): { status: number; body: Record<string,
         error: {
           message: typeof detail === "string" ? detail : typeof record.message === "string" ? record.message : "请求失败",
           type: typeof record.type === "string" ? record.type : "server_error",
+          ...errorDetailFields(record),
         },
       },
     };
   }
+  const fallback = upstreamErrorDetail(error);
   return {
-    status: 500,
-    body: { error: { message: error instanceof Error ? error.message : String(error), type: "server_error" } },
+    status: isRecord(error) && typeof error.statusCode === "number" ? error.statusCode : 500,
+    body: { error: fallback },
   };
 }
 
@@ -221,10 +252,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       reply.status(status).send({ detail: error.detail });
       return;
     }
-    const fallback = error as { statusCode?: unknown; message?: unknown };
+    const fallback = isRecord(error) ? error : {};
     const status = typeof fallback.statusCode === "number" ? fallback.statusCode : 500;
-    app.log.error(error as Error);
-    reply.status(status).send({ detail: errorDetail(String(fallback.message ?? error), "server_error") });
+    app.log.error(error instanceof Error ? error : new Error(String(error)));
+    reply.status(status).send({ detail: upstreamErrorDetail(error) });
   });
 
   app.setNotFoundHandler((_request, reply) => {

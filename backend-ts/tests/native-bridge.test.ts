@@ -364,9 +364,16 @@ describe("native gateway bridge", () => {
           storageState: { cookies: [{ name: "SID", value: name, domain: ".google.com", path: "/" }], origins: [] },
         });
       }
+      const quotaError = () => Object.assign(
+        new Error("AI Studio upstream returned HTTP 429: quota exceeded"),
+        {
+          statusCode: 429,
+          quotaInfo: { reason: "quota_exceeded", retryAfterMs: 3000, quotaMetric: "requests_per_minute" },
+        },
+      );
       const factory = (): FakeGateway => {
         const gateway = new FakeGateway();
-        gateway.errors.push(new Error("AI Studio upstream returned HTTP 429: quota exceeded"));
+        gateway.errors.push(quotaError());
         return gateway;
       };
       const bridge = new NativeBackendBridge(
@@ -377,9 +384,16 @@ describe("native gateway bridge", () => {
       await assert.rejects(
         bridge.request("generate", { model: "gemini-test", body: {} }),
         (error: unknown) => {
-          if (!error || typeof error !== "object" || !("statusCode" in error)) return false;
+          if (!error || typeof error !== "object" || !("statusCode" in error) || !("detail" in error)) return false;
           assert.equal(error.statusCode, 429);
           assert.match(String(error), /HTTP 429/u);
+          assert.deepEqual(error.detail, {
+            message: "AI Studio quota unavailable: all 2 configured accounts returned rate-limit responses for gemini-test. Retry after approximately 3 seconds.",
+            type: "rate_limit_error",
+            quota_reason: "quota_exceeded",
+            retry_after_ms: 3000,
+            quota_metric: "requests_per_minute",
+          });
           return true;
         },
       );
