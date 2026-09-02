@@ -354,6 +354,43 @@ describe("native gateway bridge", () => {
     }
   });
 
+  it("reports when all attempted accounts are quota-limited", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aistudio-native-quota-exhausted-"));
+    try {
+      const accountStore = new AccountStore(join(directory, "accounts"));
+      for (const [name, email] of [["A", "a@example.com"], ["B", "b@example.com"]] as const) {
+        await accountStore.saveStorageState({
+          name, email,
+          storageState: { cookies: [{ name: "SID", value: name, domain: ".google.com", path: "/" }], origins: [] },
+        });
+      }
+      const factory = (): FakeGateway => {
+        const gateway = new FakeGateway();
+        gateway.errors.push(new Error("AI Studio upstream returned HTTP 429: quota exceeded"));
+        return gateway;
+      };
+      const bridge = new NativeBackendBridge(
+        new FakeGateway(),
+        accountStore,
+        new StatsStore(join(directory, "stats.json")), undefined, factory, freshCache(),
+      );
+      await assert.rejects(
+        bridge.request("generate", { model: "gemini-test", body: {} }),
+        (error: unknown) => {
+          if (!error || typeof error !== "object" || !("statusCode" in error)) return false;
+          assert.equal(error.statusCode, 429);
+          assert.match(String(error), /HTTP 429/u);
+          return true;
+        },
+      );
+      const logs = await bridge.request<Record<string, unknown>[]>("request_logs");
+      assert.equal(logs[0]?.status, "rate_limited");
+      assert.match(String(logs[0]?.error), /quota unavailable/u);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("evicts the least-recently-used account browser beyond the keep-alive cap", async () => {
     const directory = await mkdtemp(join(tmpdir(), "aistudio-gateway-lru-"));
     try {

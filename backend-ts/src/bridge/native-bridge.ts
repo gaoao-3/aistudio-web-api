@@ -500,6 +500,12 @@ export class NativeBackendBridge implements BackendBridge {
       // 命中/去重的响应也带 usageMetadata：记入日志仅供展示参考；用量统计仍会跳过它（避免重复计上游消耗）。
       const usage = response && isRecord(response.usageMetadata) ? response.usageMetadata : undefined;
       const num = (value: unknown): number => Number(value) || 0;
+      const detailMessage = error instanceof BridgeError && isRecord(error.detail) && typeof error.detail.message === "string"
+        ? error.detail.message
+        : undefined;
+      const errorMessage = error
+        ? detailMessage ?? String(error instanceof Error ? error.message : error)
+        : undefined;
       this.requestLogs.record({
         created_at: Date.now(),
         kind: trace.kind,
@@ -512,7 +518,7 @@ export class NativeBackendBridge implements BackendBridge {
         total_tokens: num(usage?.totalTokenCount ?? usage?.total_tokens),
         cache: trace.cache,
         attempts: trace.attempts,
-        error: error ? String(error instanceof Error ? error.message : error).slice(0, 500) : undefined,
+        error: errorMessage ? errorMessage.slice(0, 500) : undefined,
       });
     } catch {
       // 日志存储故障不应影响 API 请求
@@ -642,6 +648,7 @@ export class NativeBackendBridge implements BackendBridge {
       ? all.find(account => account.id === routing.preferredAccountId)
       : undefined;
     let lastError: unknown;
+    let rateLimitedAttempts = 0;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       if (signal?.aborted) throw Object.assign(new Error("Native gateway request aborted"), { name: "AbortError" });
       const account = attempt === 0 && preferredAccount
@@ -680,11 +687,13 @@ export class NativeBackendBridge implements BackendBridge {
       } catch (error) {
         lastError = error;
         if (isRateLimitedError(error)) {
+          rateLimitedAttempts += 1;
           this.rotator.recordRateLimited(account.id);
           // 429 是账号频率问题，不重建浏览器；进入冷却，并在以后扩容时优先淘汰。
           this.gatewayEvictPriority.add(account.id);
           if (onRateLimited) await onRateLimited().catch(() => undefined);
           if (!emitted && attempt + 1 < maxAttempts) continue;
+          if (!emitted) break;
         } else if (isAuthExpiredError(error)) {
           // 有现存浏览器页面时，先通过真实 ServiceLogin 主动续活；成功后固定同账号重试一次。
           if (!emitted) {
@@ -750,6 +759,15 @@ export class NativeBackendBridge implements BackendBridge {
       } finally {
         this.releaseGateway(account.id);
       }
+    }
+    if (lastError && rateLimitedAttempts > 0 && rateLimitedAttempts === attempted.size) {
+      const scope = attempted.size === all.length
+        ? `all ${all.length} configured accounts`
+        : `all ${attempted.size} attempted accounts`;
+      throw new BridgeError(429, {
+        message: `AI Studio quota unavailable: ${scope} returned rate-limit responses for ${model}. Wait for quota reset or add an account with available quota.`,
+        type: "rate_limit_error",
+      });
     }
     throw lastError ?? new Error("没有可用的 Google 账号");
   }
