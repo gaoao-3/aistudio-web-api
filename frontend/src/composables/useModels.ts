@@ -12,7 +12,9 @@ let fallbackNoticeShown = false;
 export function useModels() {
   function pickDefaultModel(): string {
     const ids = models.value.map(m => m.id);
-    if (ids.includes('gemma-4-31b-it')) return 'gemma-4-31b-it';
+    if (ids.includes('gemini-3.8-flash')) return 'gemini-3.8-flash';
+    if (ids.includes('gemini-3.7-flash')) return 'gemini-3.7-flash';
+    if (ids.includes('gemini-3.6-flash')) return 'gemini-3.6-flash';
     // 实时目录可能把 agent（antigravity/deep-research）排在前面，跳过
     return ids.find(id => /^(gemini|gemma)-/.test(id)) || ids[0] || '';
   }

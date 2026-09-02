@@ -30,21 +30,36 @@ interface BuildAppOptions {
   readonly runtimeConfigFile?: string;
 }
 
+// Fallback aligned with the current AI Studio ListModels generateContent catalog.
+// Bidi-only models and agent-only models stay live-catalog-only.
 const FALLBACK_MODELS = [
-  "gemma-4-31b-it",
-  "gemma-4-26b-a4b-it",
-  "gemini-3-flash-preview",
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
   "gemini-3.5-flash",
-  "gemini-3.1-pro-preview",
+  "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
-  "gemini-3.1-flash-lite-image",
+  "gemini-3.1-pro-preview",
+  "gemini-3-flash-preview",
   "gemini-3.1-flash-image",
+  "gemini-3.1-flash-lite-image",
   "gemini-3-pro-image",
+  "gemini-3.5-transcribe",
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
   "gemini-2.5-flash-image",
-  "gemini-3.1-flash-tts-preview",
   "gemini-pro-latest",
   "gemini-flash-latest",
   "gemini-flash-lite-latest",
+  "gemini-3.1-flash-tts-preview",
+  "gemini-2.5-pro-preview-tts",
+  "gemini-2.5-flash-preview-tts",
+  "gemini-robotics-er-2-preview",
+  "gemini-omni-1.1-flash",
+  "gemini-omni-flash-preview",
+  "gemma-4-31b-it",
+  "gemma-4-26b-a4b-it",
 ] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

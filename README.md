@@ -230,7 +230,7 @@ curl http://localhost:3006/v1beta/models \
 普通生成：
 
 ```bash
-curl http://localhost:3006/v1beta/models/gemini-3-flash-preview:generateContent \
+curl http://localhost:3006/v1beta/models/gemini-3.8-flash:generateContent \
   -H "Content-Type: application/json" \
   -d '{
     "contents": [{
@@ -243,7 +243,7 @@ curl http://localhost:3006/v1beta/models/gemini-3-flash-preview:generateContent 
 流式生成：
 
 ```bash
-curl http://localhost:3006/v1beta/models/gemini-3-flash-preview:streamGenerateContent \
+curl http://localhost:3006/v1beta/models/gemini-3.8-flash:streamGenerateContent \
   -H "Content-Type: application/json" \
   -d '{
     "contents": [{
@@ -258,7 +258,7 @@ curl http://localhost:3006/v1beta/models/gemini-3-flash-preview:streamGenerateCo
 Token 计数（权威 CountTokens RPC，不消耗生成配额）：
 
 ```bash
-curl http://localhost:3006/v1beta/models/gemini-3-flash-preview:countTokens \
+curl http://localhost:3006/v1beta/models/gemini-3.8-flash:countTokens \
   -H "Content-Type: application/json" \
   -d '{"contents": [{"role": "user", "parts": [{"text": "你好"}]}]}'
 # => {"totalTokens": 2}
@@ -373,7 +373,7 @@ curl http://localhost:3006/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <AISTUDIO_API_KEY>" \
   -d '{
-    "model": "gemini-3-flash-preview",
+    "model": "gemini-3.8-flash",
     "messages": [{"role": "user", "content": "你好"}],
     "temperature": 0.7,
     "max_tokens": 1024
@@ -387,7 +387,7 @@ from openai import OpenAI
 
 client = OpenAI(api_key="<AISTUDIO_API_KEY>", base_url="http://localhost:3006/v1")
 stream = client.chat.completions.create(
-    model="gemini-3-flash-preview",
+    model="gemini-3.8-flash",
     messages=[{"role": "user", "content": "你好"}],
     stream=True,
     stream_options={"include_usage": True},

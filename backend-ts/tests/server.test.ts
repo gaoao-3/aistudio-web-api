@@ -129,6 +129,11 @@ test("model catalog reports whether it came from AI Studio or the fallback", asy
   assert.equal(fallbackResponse.json().source, "fallback");
   assert.ok(fallbackResponse.json().models.length > 0);
   assert.equal(fallbackResponse.json().models.some((model: { name?: string }) => model.name?.endsWith("-web")), false);
+  const fallbackNames = fallbackResponse.json().models.map((model: { name?: string }) => model.name);
+  assert.ok(fallbackNames.includes("models/gemini-3.8-flash"));
+  assert.ok(fallbackNames.includes("models/gemini-3.7-flash"));
+  assert.ok(fallbackNames.includes("models/gemini-3.5-flash-lite"));
+  assert.equal(fallbackNames.includes("models/gemini-3.5-live-translate-preview"), false);
   assert.equal(fallback.bridge.calls.some((call) => call.method === "models"), true);
 });
 

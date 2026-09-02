@@ -122,13 +122,13 @@ For native Function Calling, keep the model part (including `thoughtSignature`) 
 export AISTUDIO_API_KEY="<key-created-in-webui>"
 
 # Non-streaming
-curl http://localhost:3006/v1beta/models/gemini-3-flash-preview:generateContent \
+curl http://localhost:3006/v1beta/models/gemini-3.8-flash:generateContent \
   -H "Authorization: Bearer ${AISTUDIO_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{"contents":[{"role":"user","parts":[{"text":"Hello"}]}]}'
 
 # Streaming
-curl http://localhost:3006/v1beta/models/gemini-3-flash-preview:streamGenerateContent \
+curl http://localhost:3006/v1beta/models/gemini-3.8-flash:streamGenerateContent \
   -H "Authorization: Bearer ${AISTUDIO_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{"contents":[{"role":"user","parts":[{"text":"Explain quantum entanglement."}]}]}'
@@ -153,13 +153,13 @@ The service also exposes OpenAI protocol endpoints (adapter approach modeled on 
 curl http://localhost:3006/v1/chat/completions \
   -H "Authorization: Bearer ${AISTUDIO_API_KEY}" \
   -H "Content-Type: application/json" \
-  -d '{"model":"gemini-3-flash-preview","messages":[{"role":"user","content":"Hello"}],"temperature":0.7}'
+  -d '{"model":"gemini-3.8-flash","messages":[{"role":"user","content":"Hello"}],"temperature":0.7}'
 
 # Streaming (OpenAI SDK)
 from openai import OpenAI
 client = OpenAI(api_key="${AISTUDIO_API_KEY}", base_url="http://localhost:3006/v1")
 stream = client.chat.completions.create(
-    model="gemini-3-flash-preview",
+    model="gemini-3.8-flash",
     messages=[{"role": "user", "content": "Hello"}],
     stream=True,
     stream_options={"include_usage": True},
