@@ -193,7 +193,7 @@ API 请求中的内置原生工具声明会被移除，不会发送到 AI Studio
 | :---: | --- | --- |
 | `GET` | `/health` | 服务健康检查 |
 | `GET` | `/auth/check` | 鉴权状态和运行能力 |
-| `GET` | `/v1beta/models` | AI Studio 实时模型目录；失败时返回内置兜底目录 |
+| `GET` | `/v1beta/models` | AI Studio 实时模型目录（约每 15 分钟自动刷新）；失败时使用上次同步快照或内置兜底目录 |
 | `GET` | `/v1beta/models/{model}` | 查询单个模型 |
 | `POST` | `/v1beta/models/{model}:generateContent` | Gemini 原生非流式生成 |
 | `POST` | `/v1beta/models/{model}:streamGenerateContent` | Gemini 原生 SSE 流式生成 |
@@ -218,12 +218,13 @@ curl http://localhost:3006/v1beta/models \
   -H "Authorization: Bearer <AISTUDIO_API_KEY>"
 ```
 
-响应中的 `source` 有两种值：
+响应中的 `source` 有三种值：
 
-- `live`：从已登录的 AI Studio 面板读取成功。
-- `fallback`：浏览器未登录、Cookie 失效、页面协议变化或网络失败，暂时使用内置目录。
+- `live`：从已登录的 AI Studio 面板读取成功，并写入 `data/model-catalog.json`。
+- `snapshot`：实时读取失败，使用上次成功同步的模型目录快照。
+- `fallback`：没有可用快照时，浏览器未登录、Cookie 失效、页面协议变化或网络失败，暂时使用内置目录。
 
-兜底目录只用于保持接口可发现性；实际生成仍需要可用的 AI Studio 登录会话。
+服务端模型目录缓存 15 分钟；WebUI 保持打开时也会每 15 分钟重新请求一次。快照只保存模型元数据，不包含登录凭据。
 
 ### Gemini 原生生成
 

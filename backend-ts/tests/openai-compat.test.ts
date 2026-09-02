@@ -80,6 +80,7 @@ async function fixture(bridge = new MockBridge()) {
     logger: false,
     serveStatic: false,
     runtimeConfigFile: join(directory, ".env"),
+    modelCatalogFile: join(directory, "model-catalog.json"),
   });
   return { app, bridge, directory };
 }

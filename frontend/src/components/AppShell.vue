@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 应用壳：左侧 rail 导航 + 顶栏 + 视图切换
-import { defineAsyncComponent, onMounted, ref } from 'vue';
+import { defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue';
 import Icon from './Icon.vue';
 import ThemeSwitcher from './ThemeSwitcher.vue';
 const ChatView = defineAsyncComponent(() => import('../views/ChatView.vue'));
@@ -24,6 +24,12 @@ const { loadStats } = useStats();
 
 const navOpen = ref(false);
 
+let modelRefreshTimer: ReturnType<typeof setInterval> | undefined;
+
+onBeforeUnmount(() => {
+  if (modelRefreshTimer !== undefined) clearInterval(modelRefreshTimer);
+});
+
 const NAV: { key: ViewKey; label: string; icon: string }[] = [
   { key: 'chat', label: '对话', icon: 'chat' },
   { key: 'history', label: '历史', icon: 'history' },
@@ -41,6 +47,7 @@ function nav(v: ViewKey): void {
 onMounted(async () => {
   await checkAuth();
   loadModels();
+  modelRefreshTimer = setInterval(() => { void loadModels(); }, 15 * 60 * 1000);
   loadStats();
   loadAccounts();
   loadRotation();

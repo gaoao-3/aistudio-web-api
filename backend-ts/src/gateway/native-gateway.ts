@@ -12,6 +12,8 @@ import { IncrementalAIStudioParser } from "./incremental-parser.js";
 import { assertProtocolCapability } from "./protocol-capabilities.js";
 import type { AccountProfile } from "../accounts/account-profile.js";
 
+const MODEL_CATALOG_CACHE_TTL_MS = 15 * 60 * 1000;
+
 export interface NativeGenerationOptions {
   readonly previousResponseId?: string | null;
   readonly onResponseId?: (responseId: string) => void;
@@ -178,7 +180,7 @@ export class NativeGateway {
   async models(): Promise<Record<string, unknown>[]> {
     if (this.modelCache && this.modelCache.expires > Date.now()) return structuredClone(this.modelCache.models);
     const models = await fetchModelCatalog(this.session);
-    this.modelCache = { models: structuredClone(models), expires: Date.now() + 60 * 60 * 1000 };
+    this.modelCache = { models: structuredClone(models), expires: Date.now() + MODEL_CATALOG_CACHE_TTL_MS };
     return models;
   }
 

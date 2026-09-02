@@ -4,10 +4,11 @@ import { model, models } from './useCache';
 
 interface ModelsResponse {
   models?: { name?: string }[];
-  source?: 'live' | 'fallback';
+  source?: 'live' | 'snapshot' | 'fallback';
 }
 
 let fallbackNoticeShown = false;
+let snapshotNoticeShown = false;
 
 export function useModels() {
   function pickDefaultModel(): string {
@@ -28,7 +29,10 @@ export function useModels() {
       models.value = d.models
         .map(m => ({ id: (m.name || '').replace('models/', '') }))
         .filter(m => m.id && !/^(antigravity|deep-research)/.test(m.id));
-      if (d.source === 'fallback' && !fallbackNoticeShown) {
+      if (d.source === 'snapshot' && !snapshotNoticeShown) {
+        snapshotNoticeShown = true;
+        toastInfo('实时模型目录暂不可用，当前使用上次同步目录');
+      } else if (d.source === 'fallback' && !fallbackNoticeShown) {
         fallbackNoticeShown = true;
         toastInfo('实时模型目录不可用，当前使用内置兜底列表');
       }

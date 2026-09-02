@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { parse, stringify } from "yaml";
@@ -7,7 +8,7 @@ import { ApiKeyStore } from "./auth/api-key-store.js";
 import { BridgeError, type BackendBridge } from "./bridge/backend-bridge.js";
 import { NativeBackendBridge } from "./bridge/native-bridge.js";
 import { RuntimeConfigStore } from "./config/runtime-config.js";
-import { settings } from "./config.js";
+import { runtimeRoot, settings } from "./config.js";
 import { HttpError, errorDetail } from "./http/errors.js";
 import {
   OpenAiRequestError,
@@ -28,6 +29,7 @@ interface BuildAppOptions {
   readonly logger?: boolean;
   readonly serveStatic?: boolean;
   readonly runtimeConfigFile?: string;
+  readonly modelCatalogFile?: string;
 }
 
 // Fallback aligned with the current AI Studio ListModels generateContent catalog.
@@ -64,6 +66,32 @@ const FALLBACK_MODELS = [
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function modelCatalogEntries(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is Record<string, unknown> => (
+    isRecord(item) && typeof item.name === "string" && item.name.trim().length > 0
+  ));
+}
+
+async function readModelCatalogSnapshot(file: string): Promise<Record<string, unknown>[] | undefined> {
+  try {
+    const payload: unknown = JSON.parse(await readFile(file, "utf8"));
+    const entries = isRecord(payload) && "models" in payload ? payload.models : payload;
+    const models = modelCatalogEntries(entries);
+    return models.length > 0 ? models : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeModelCatalogSnapshot(file: string, models: Record<string, unknown>[]): Promise<void> {
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, JSON.stringify({
+    updated_at: new Date().toISOString(),
+    models,
+  }, null, 2), "utf8");
 }
 
 function quotaInfoFields(info: Record<string, unknown>): Record<string, unknown> {
@@ -249,6 +277,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const requestContext = new WeakMap<object, { readonly webUi: boolean }>();
   const app = Fastify({ logger: options.logger ?? true, bodyLimit: settings.bodyLimitBytes });
   const runtimeConfig = new RuntimeConfigStore(options.runtimeConfigFile);
+  const modelCatalogFile = options.modelCatalogFile ?? join(runtimeRoot, "data", "model-catalog.json");
 
   app.decorate("backendServices", { bridge, apiKeys });
 
@@ -459,17 +488,23 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   async function availableModels(): Promise<{
     readonly models: Record<string, unknown>[];
-    readonly source: "live" | "fallback";
+    readonly source: "live" | "snapshot" | "fallback";
   }> {
     try {
-      const models = await bridge.request<unknown>("models");
-      if (Array.isArray(models)) {
-        const validModels = models.filter(isRecord);
-        if (validModels.length > 0) return { models: validModels, source: "live" };
+      const models = modelCatalogEntries(await bridge.request<unknown>("models"));
+      if (models.length > 0) {
+        try {
+          await writeModelCatalogSnapshot(modelCatalogFile, models);
+        } catch (error) {
+          app.log.warn({ err: error }, "保存 AI Studio 模型目录快照失败");
+        }
+        return { models, source: "live" };
       }
     } catch (error) {
-      app.log.warn({ err: error }, "读取 AI Studio 模型目录失败，使用内置目录");
+      app.log.warn({ err: error }, "读取 AI Studio 模型目录失败，尝试使用上次同步目录");
     }
+    const snapshot = await readModelCatalogSnapshot(modelCatalogFile);
+    if (snapshot) return { models: snapshot, source: "snapshot" };
     return { models: FALLBACK_MODELS.map(modelCard), source: "fallback" };
   }
 

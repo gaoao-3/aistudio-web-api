@@ -54,7 +54,7 @@ Ciallo～(∠・ω< )⌒☆
 | 🤝 | **OpenAI-compatible API** | `/v1/chat/completions` (non-streaming + SSE streaming with `data: [DONE]`) and `/v1/models`, so OpenAI SDK / One-API / New-API clients can point `base_url` straight at this service |
 | 🖥️ | **Native TypeScript backend** | Fastify, CloakBrowser, BotGuard hooks, wire codec, response parsing, and native request routing all run in Node.js |
 | 🌐 | **WebUI** | AI Studio-style interface: chat, history, accounts, usage stats; mobile drawer layout |
-| 📡 | **Live model catalog** | Reads the AI Studio panel through the logged-in browser session, with a built-in fallback list on failure |
+| 📡 | **Live model catalog** | Reads the AI Studio panel through the logged-in browser session, refreshes about every 15 minutes, and keeps a last-known-good snapshot plus a built-in fallback |
 | 🛠️ | **Native tools** | WebUI can use Google Search, Code Execution, Google Maps, and URL Context; the API supports the full native Function Calling loop (declaration → `functionCall` → client-side execution → `functionResponse` → final answer) |
 | 🧠 | **Thinking** | Thought steps / streaming text deltas, `thinking_signature` passthrough, `total_thought_tokens` accounting |
 | 🖼️ | **Multimodal** | The Chat page reads images, audio, video, PDF, text, and code files; the native API accepts `inlineData` and existing Google Files `fileData` |
@@ -251,7 +251,7 @@ Client (Gemini SDK / WebUI / curl)
 > [!NOTE]
 > **BotGuard** — every request needs an encrypted snapshot proving a real browser. The snapshot generator is hooked at runtime and located by feature matching (`.snapshot({` + `content` + `yield`), so Google renaming the function in bundle updates does not break it.
 >
-> **Live model catalog** — the logged-in AI Studio browser session supplies the credentials for model discovery and generation.
+> **Live model catalog** — the logged-in AI Studio browser session supplies the credentials for model discovery and generation. The server refreshes the catalog every 15 minutes and stores only model metadata in `data/model-catalog.json`; no login credentials are written there.
 
 ---
 
@@ -283,9 +283,9 @@ This means the in-browser `fetch()` failed before a response arrived. Common cau
 3. Make sure the proxy applies to the backend-launched browser process, not only the system browser.
 4. If failures cluster on long requests, increase `AISTUDIO_BROWSER_TIMEOUT_MS`.
 
-**Model catalog returns `fallback`?**
+**Model catalog returns `snapshot` or `fallback`?**
 
-The browser session is logged out, cookies expired, the page protocol changed, or the network failed; the service temporarily serves the built-in catalog. Generation still requires an active AI Studio session — activate an account before requesting.
+`snapshot` means the live catalog request failed and the service is using the last successful catalog saved in `data/model-catalog.json`. `fallback` means no usable snapshot exists; the browser session is logged out, cookies expired, the page protocol changed, or the network failed. Generation still requires an active AI Studio session — activate an account before requesting.
 
 **Hitting 429 / quota limits?**
 

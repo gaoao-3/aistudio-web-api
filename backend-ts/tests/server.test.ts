@@ -67,6 +67,7 @@ async function fixture(bridge = new MockBridge()) {
     logger: false,
     serveStatic: false,
     runtimeConfigFile: join(directory, ".env"),
+    modelCatalogFile: join(directory, "model-catalog.json"),
   });
   return { app, bridge, apiKeys, directory };
 }
@@ -135,6 +136,45 @@ test("model catalog reports whether it came from AI Studio or the fallback", asy
   assert.ok(fallbackNames.includes("models/gemini-3.5-flash-lite"));
   assert.equal(fallbackNames.includes("models/gemini-3.5-live-translate-preview"), false);
   assert.equal(fallback.bridge.calls.some((call) => call.method === "models"), true);
+});
+
+test("model catalog persists live results and reuses them when AI Studio is unavailable", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "aistudio-fastify-models-"));
+  const modelCatalogFile = join(directory, "model-catalog.json");
+  const liveApp = await buildApp({
+    services: {
+      bridge: new MockBridge([{ name: "models/gemini-auto-refresh", displayName: "Auto Refresh" }]),
+      apiKeys: new ApiKeyStore(join(directory, "apikeys.json")),
+    },
+    logger: false,
+    serveStatic: false,
+    modelCatalogFile,
+  });
+  t.after(async () => { await liveApp.close(); });
+
+  const liveResponse = await liveApp.inject({ method: "GET", url: "/v1beta/models" });
+  assert.equal(liveResponse.json().source, "live");
+  const saved = JSON.parse(await readFile(modelCatalogFile, "utf8")) as {
+    updated_at?: string;
+    models?: Array<{ name?: string }>;
+  };
+  assert.match(saved.updated_at ?? "", /^\d{4}-\d{2}-\d{2}T/u);
+  assert.equal(saved.models?.[0]?.name, "models/gemini-auto-refresh");
+
+  const offlineApp = await buildApp({
+    services: {
+      bridge: new MockBridge(),
+      apiKeys: new ApiKeyStore(join(directory, "apikeys.json")),
+    },
+    logger: false,
+    serveStatic: false,
+    modelCatalogFile,
+  });
+  t.after(async () => { await offlineApp.close(); await rm(directory, { recursive: true, force: true }); });
+  const offlineResponse = await offlineApp.inject({ method: "GET", url: "/v1beta/models" });
+  assert.equal(offlineResponse.statusCode, 200);
+  assert.equal(offlineResponse.json().source, "snapshot");
+  assert.equal(offlineResponse.json().models[0].name, "models/gemini-auto-refresh");
 });
 
 test("runtime config exposes settings and can be configured from the API", async (t) => {
