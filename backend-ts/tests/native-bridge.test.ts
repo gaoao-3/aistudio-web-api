@@ -317,6 +317,43 @@ describe("native gateway bridge", () => {
     }
   });
 
+  it("fails over when an upstream response contains no candidate chunk", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aistudio-native-candidate-failover-"));
+    try {
+      const accountStore = new AccountStore(join(directory, "accounts"));
+      for (const [name, email] of [["A", "a@example.com"], ["B", "b@example.com"]] as const) {
+        await accountStore.saveStorageState({
+          name, email,
+          storageState: { cookies: [{ name: "SID", value: name, domain: ".google.com", path: "/" }], origins: [] },
+        });
+      }
+      const accounts = await accountStore.list();
+      const gateways = new Map<string, FakeGateway>();
+      const closed: string[] = [];
+      const factory = (authFile: string): FakeGateway => {
+        const accountId = basename(dirname(authFile));
+        const gateway = new FakeGateway();
+        gateway.close = async () => { closed.push(accountId); };
+        if (accountId === accounts[0]?.id) gateway.errors.push(new Error("AI Studio response did not contain a candidate chunk (0 response bytes)"));
+        else gateway.responses.push({ candidates: [{ content: { parts: [{ text: "recovered" }] } }] });
+        gateways.set(accountId, gateway);
+        return gateway;
+      };
+      const bridge = new NativeBackendBridge(
+        new FakeGateway(),
+        accountStore,
+        new StatsStore(join(directory, "stats.json")), undefined, factory, freshCache(),
+      );
+      const result = await bridge.request<Record<string, unknown>>("generate", { model: "gemini-test", body: {} });
+      assert.equal((result.candidates as Record<string, unknown>[])[0]?.content !== undefined, true);
+      assert.equal(gateways.get(accounts[0]!.id)?.calls.length, 1);
+      assert.equal(gateways.get(accounts[1]!.id)?.calls.length, 1);
+      assert.deepEqual(closed, [accounts[0]!.id]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("evicts the least-recently-used account browser beyond the keep-alive cap", async () => {
     const directory = await mkdtemp(join(tmpdir(), "aistudio-gateway-lru-"));
     try {

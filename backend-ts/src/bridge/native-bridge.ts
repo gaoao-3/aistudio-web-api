@@ -79,7 +79,8 @@ function nativeOptionsForAttempt(routing: GenerationRouting | undefined, account
 /** 只重试明显属于上游/浏览器的瞬时故障；请求参数类 4xx 不重试。 */
 function isRetryableGatewayError(error: unknown): boolean {
   const message = String(error instanceof Error ? error.message : error);
-  return /HTTP 5\d\d|fetch failed|network|timed? out|timeout|target closed|page closed|context closed|browser.*closed/iu.test(message);
+  if (isRecord(error) && error.retryable === true) return true;
+  return /HTTP 5\d\d|fetch failed|network|timed? out|timeout|target closed|page closed|context closed|browser.*closed|candidate chunk|empty candidate/iu.test(message);
 }
 
 function authSnapshot(result: AuthRefreshResult): AccountAuthSnapshot {

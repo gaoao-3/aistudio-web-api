@@ -32,6 +32,33 @@ export function partitionMixedTools(tools: unknown[][] | null): ToolGroups {
   for (const tool of tools ?? []) (isFunctionTool(tool) ? functions : builtins).push(tool);
   return { builtins, functions };
 }
+function retryableUpstreamError(message: string, raw: string): Error {
+  const responseBytes = Buffer.byteLength(raw, "utf8");
+  if (process.env.AISTUDIO_DEBUG_WIRE === "1") {
+    try {
+      appendFileSync(join(runtimeRoot, "data", "wire-debug.log"), JSON.stringify({
+        time: new Date().toISOString(),
+        kind: "response-parse-error",
+        responseBytes,
+        upstreamBody: raw.slice(0, 2000),
+      }) + "\n");
+    } catch { /* debug only */ }
+  }
+  return Object.assign(
+    new Error(`${message} (${responseBytes} response bytes)`),
+    { statusCode: 502, retryable: true },
+  );
+}
+
+function parseUpstreamResponse(raw: string): ParsedAIStudioResponse {
+  try {
+    return parseAIStudioResponse(raw);
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    throw retryableUpstreamError(error.message, raw);
+  }
+}
+
 
 function bridgeBuiltinResult(contents: readonly AistudioContent[], parsed: ParsedAIStudioResponse): AistudioContent[] {
   const parts: AistudioPart[] = [];
@@ -191,7 +218,7 @@ export class NativeGateway {
       const parser = new IncrementalAIStudioParser();
       return this.session.replayStream(wireBody, raw => {
         for (const chunk of parser.feed(raw)) {
-          const parsed = parseAIStudioResponse(JSON.stringify(chunk));
+          const parsed = parseUpstreamResponse(JSON.stringify(chunk));
           const candidate = parsed.candidate;
           if (candidate.text || candidate.thinking || candidate.parts.some(part => "functionCall" in part || "inlineData" in part)) {
             onResponse(toGeminiResponse(parsed));
@@ -213,7 +240,7 @@ export class NativeGateway {
           { statusCode: builtinResponse.status },
         );
       }
-      const bridged = bridgeBuiltinResult(normalized.contents, parseAIStudioResponse(builtinResponse.body));
+      const bridged = bridgeBuiltinResult(normalized.contents, parseUpstreamResponse(builtinResponse.body));
       response = await replay(await makeLoggedBody(bridged, toolGroups.functions, false));
     } else {
       response = await replay(await makeLoggedBody(normalized.contents, effectiveTools, false));
@@ -228,12 +255,9 @@ export class NativeGateway {
         { statusCode: response.status },
       );
     }
-    const finalParsed = parseAIStudioResponse(response.body);
+    const finalParsed = parseUpstreamResponse(response.body);
     if (emptyCandidateResponse(finalParsed)) {
-      throw Object.assign(
-        new Error("AI Studio upstream returned an empty candidate"),
-        { statusCode: 502 },
-      );
+      throw retryableUpstreamError("AI Studio upstream returned an empty candidate", response.body);
     }
     if (finalParsed.responseId) options?.onResponseId?.(finalParsed.responseId);
     return toGeminiResponse(finalParsed);
