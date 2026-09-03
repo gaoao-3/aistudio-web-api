@@ -199,7 +199,10 @@ Via environment variables or a `.env` file (see `.env.example`). Common options:
 | `AISTUDIO_HOST` | `0.0.0.0` | Listen address |
 | `AISTUDIO_API_KEY` | empty | Enables auth when set |
 | `AISTUDIO_BROWSER_HEADLESS` | `true` | Run CloakBrowser headlessly |
-| `AISTUDIO_BROWSER_IDLE_TIMEOUT_MS` | `1800000` | Close an idle browser after this many milliseconds; `0` disables idle close |
+| `AISTUDIO_BROWSER_IDLE_TIMEOUT_MS` | `1800000` | Close a browser after this many milliseconds of inactivity; `0` disables idle close |
+| `AISTUDIO_BROWSER_MAX_ALIVE_INSTANCES` | `2` | Keep a two-account warm pool; evict the least recently used account when exceeded; `0` disables the cap |
+| `AISTUDIO_BROWSER_STANDBY_IDLE_TIMEOUT_MS` | `600000` | Close an inactive non-active account context while preserving its Profile; `0` disables standby eviction |
+| `AISTUDIO_BROWSER_EVICT_GRACE_MS` | `60000` | Grace period before evicting an over-cap account to avoid repeated cold starts |
 | `AISTUDIO_BROWSER_TIMEOUT_MS` | `120000` | Browser upstream timeout in milliseconds |
 | `AISTUDIO_API_BODY_LIMIT_BYTES` | `33554432` | Maximum API request body size in bytes (32 MiB by default) |
 | `AISTUDIO_LOGIN_TIMEOUT_MS` | `600000` | Google login flow timeout in milliseconds |

@@ -435,8 +435,9 @@ for chunk in stream:
 
 **故障转移行为：**
 
-- **429 / 配额限制** → 当前账号进入冷却，剩余重试次数内尝试其他可用账号。
+- **429 / 配额限制** → 当前账号进入冷却，剩余重试次数内尝试其他可用账号；失败账号释放后立即后台预热下一个未使用账号，维持双温热池。
 - **403（协议 Code 7，无权限）** → 该 账号×模型 组合长效记入 `data/accounts/denied-models.json`，后续调度直接跳过；不影响该账号的其他模型。重新登录、导入 Cookie 或删除账号后自动恢复。
+- 非当前激活账号的备用浏览器空闲超过 `AISTUDIO_BROWSER_STANDBY_IDLE_TIMEOUT_MS` 后只关闭上下文，保留 Profile 和 Cookie；再次切换时自动恢复。
 - 账号资料刷新是尽力行为，页面结构变化或 Cookie 失效时会保留上一次成功资料。
 
 ---
@@ -457,6 +458,9 @@ for chunk in stream:
 | `AISTUDIO_APIKEYS_FILE` | `data/apikeys.json` | WebUI 创建的密钥存储文件 |
 | `AISTUDIO_BROWSER_HEADLESS` | `true` | 是否无头运行 CloakBrowser |
 | `AISTUDIO_BROWSER_IDLE_TIMEOUT_MS` | `1800000` | 浏览器连续空闲后自动关闭的毫秒数；`0` 表示禁用 |
+| `AISTUDIO_BROWSER_MAX_ALIVE_INSTANCES` | `2` | 双温热池上限；超出时淘汰最久未用账号，`0` 表示不限制 |
+| `AISTUDIO_BROWSER_STANDBY_IDLE_TIMEOUT_MS` | `600000` | 非当前账号的备用浏览器空闲回收时间；只关闭浏览器上下文并保留 Profile，`0` 表示禁用 |
+| `AISTUDIO_BROWSER_EVICT_GRACE_MS` | `60000` | 超过保活上限后的淘汰宽限期，避免高频切换时反复冷启动 |
 | `AISTUDIO_BROWSER_TIMEOUT_MS` | `120000` | 浏览器请求超时，单位毫秒 |
 | `AISTUDIO_API_BODY_LIMIT_BYTES` | `33554432` | 请求体上限，默认 32 MiB |
 | `AISTUDIO_PROXY_URL` | 系统代理 | 浏览器使用的代理地址 |

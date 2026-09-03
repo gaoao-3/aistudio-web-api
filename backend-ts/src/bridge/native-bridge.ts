@@ -148,6 +148,10 @@ export class NativeBackendBridge implements BackendBridge {
   private readonly gatewayPendingClose = new Set<string>();
   /** 429/普通上游错误：不立即关闭，超出双温热池时优先淘汰。 */
   private readonly gatewayEvictPriority = new Set<string>();
+  /** 正在后台预热的替代账号，避免失败重试抢占尚未就绪的实例。 */
+  private readonly prewarmingAccounts = new Set<string>();
+  private replacementPrewarmQueue: Promise<void> = Promise.resolve();
+  private standbySweepTimer: NodeJS.Timeout | undefined;
   private readonly gatewayMutex = new AsyncMutex();
   private readonly rotator: AccountRotator;
   /** 相同 key 的在途上游请求：相同请求并发到达时共享同一个 Promise，不再重复发上游。 */
@@ -192,9 +196,12 @@ export class NativeBackendBridge implements BackendBridge {
     } else {
       void this.gateway.warmup().catch(() => undefined);
     }
+    this.startStandbySweep();
   }
 
   async stop(): Promise<void> {
+    if (this.standbySweepTimer) clearInterval(this.standbySweepTimer);
+    this.standbySweepTimer = undefined;
     this.continuations.clear();
     this.running = false;
     await this.login.stop();
@@ -204,6 +211,36 @@ export class NativeBackendBridge implements BackendBridge {
     this.requestLogs.close();
     const cache = this.responseCache as { close?: () => void };
     cache.close?.();
+  }
+
+  private startStandbySweep(): void {
+    if (this.standbySweepTimer || settings.browserStandbyIdleTimeoutMs <= 0) return;
+    const intervalMs = Math.max(1_000, Math.min(60_000, settings.browserStandbyIdleTimeoutMs));
+    this.standbySweepTimer = setInterval(() => {
+      void this.evictIdleStandbyGateways();
+    }, intervalMs);
+    this.standbySweepTimer.unref();
+  }
+
+  private async evictIdleStandbyGateways(): Promise<void> {
+    if (!this.running || settings.browserStandbyIdleTimeoutMs <= 0) return;
+    const active = await this.accounts.active();
+    if (!active) return;
+    const cutoff = Date.now() - settings.browserStandbyIdleTimeoutMs;
+    const candidates = [...this.accountGateways.entries()]
+      .filter(([id, gateway]) => (
+        id !== active.id
+        && gateway
+        && (this.gatewayBusy.get(id) ?? 0) === 0
+        && (this.gatewayLastUsed.get(id) ?? 0) <= cutoff
+      ))
+      .map(([id]) => id);
+    for (const accountId of candidates) {
+      if ((await this.accounts.active())?.id === accountId) continue;
+      if ((this.gatewayBusy.get(accountId) ?? 0) > 0) continue;
+      if ((this.gatewayLastUsed.get(accountId) ?? 0) > cutoff) continue;
+      this.closeAccountGateway(accountId);
+    }
   }
 
   status(): Readonly<{ running: boolean; pid?: number }> {
@@ -472,6 +509,8 @@ export class NativeBackendBridge implements BackendBridge {
       this.gatewayBusy.delete(accountId);
       // 该账号已无在途请求：若被标记为待关闭（限流/授权过期），现在关
       if (this.gatewayPendingClose.delete(accountId)) this.closeAccountGateway(accountId);
+      // 后台预热替代账号会短时让池子超过上限；失败请求释放后立即收缩。
+      this.evictOverflowGateways();
     } else {
       this.gatewayBusy.set(accountId, busy);
     }
@@ -491,7 +530,7 @@ export class NativeBackendBridge implements BackendBridge {
    * 正在处理请求的不关；空闲未超过宽限期（browserEvictGraceMs）的不关——
    * 避免高频轮询时每个请求都冷启动。宽限期内超出的实例会留到下一轮再淘汰。
    */
-  private evictOverflowGateways(keepId: string): void {
+  private evictOverflowGateways(keepId?: string): void {
     const cap = settings.browserMaxAliveInstances;
     if (cap <= 0) return; // 0 = 不限制
     const now = Date.now();
@@ -506,6 +545,39 @@ export class NativeBackendBridge implements BackendBridge {
       );
       if (!victimId) break; // 其余都在忙或还在宽限期内，暂时允许短时溢出
       this.closeAccountGateway(victimId);
+    }
+  }
+
+  private scheduleReplacementPrewarm(excludedIds: ReadonlySet<string>, model: string): void {
+    if (!this.running) return;
+    this.replacementPrewarmQueue = this.replacementPrewarmQueue
+      .catch(() => undefined)
+      .then(() => this.prewarmReplacement(new Set(excludedIds), model))
+      .catch(() => undefined);
+  }
+
+  private async prewarmReplacement(excludedIds: ReadonlySet<string>, model: string): Promise<void> {
+    const cap = settings.browserMaxAliveInstances;
+    if (!this.running || cap === 1 || (cap > 0 && this.accountGateways.size >= cap + 1)) return;
+    const all = await this.accounts.list();
+    if (!this.running) return;
+    const rotation = await this.rotator.getAllStats();
+    if (!this.running || cap === 1 || (cap > 0 && this.accountGateways.size >= cap + 1)) return;
+    const candidate = all.find((account) => (
+      !excludedIds.has(account.id)
+      && !this.accountGateways.has(account.id)
+      && !this.prewarmingAccounts.has(account.id)
+      && !this.rotator.isDenied(account.id, model)
+      && rotation[account.id]?.is_available !== false
+    ));
+    if (!candidate) return;
+    this.prewarmingAccounts.add(candidate.id);
+    try {
+      await this.withGatewayBusy(candidate.id, (gateway) => gateway.warmup());
+    } catch {
+      this.closeAccountGateway(candidate.id);
+    } finally {
+      this.prewarmingAccounts.delete(candidate.id);
     }
   }
 
@@ -636,7 +708,6 @@ export class NativeBackendBridge implements BackendBridge {
       this.inflightGenerations.delete(cacheKey);
     }
   }
-
   private async generateUpstream(
     model: string,
     body: unknown,
@@ -667,9 +738,12 @@ export class NativeBackendBridge implements BackendBridge {
     let lastQuotaInfo: UpstreamQuotaInfo | undefined;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       if (signal?.aborted) throw Object.assign(new Error("Native gateway request aborted"), { name: "AbortError" });
+      const warmAccounts = new Set(
+        [...this.accountGateways.keys()].filter((accountId) => !this.prewarmingAccounts.has(accountId)),
+      );
       const account = attempt === 0 && preferredAccount
         ? preferredAccount
-        : await this.rotator.getNextAccount(signal, new Set(this.accountGateways.keys()), attempted, model);
+        : await this.rotator.getNextAccount(signal, warmAccounts, attempted, model);
       if (!account) {
         // 全部账号都因 403 Code 7 被该模型拒绝时，给出可操作的错误而不是泛泛的“无可用账号”。
         if (all.length > 0 && all.every(item => this.rotator.isDenied(item.id, model))) {
@@ -709,7 +783,10 @@ export class NativeBackendBridge implements BackendBridge {
           // 429 是账号频率问题，不重建浏览器；进入冷却，并在以后扩容时优先淘汰。
           this.gatewayEvictPriority.add(account.id);
           if (onRateLimited) await onRateLimited().catch(() => undefined);
-          if (!emitted && attempt + 1 < maxAttempts) continue;
+          if (!emitted && attempt + 1 < maxAttempts) {
+            this.scheduleReplacementPrewarm(attempted, model);
+            continue;
+          }
           if (!emitted) break;
         } else if (isAuthExpiredError(error)) {
           // 有现存浏览器页面时，先通过真实 ServiceLogin 主动续活；成功后固定同账号重试一次。
@@ -740,7 +817,10 @@ export class NativeBackendBridge implements BackendBridge {
           }
           this.rotator.recordAuthExpired(account.id);
           this.gatewayPendingClose.add(account.id);
-          if (!emitted && attempt + 1 < maxAttempts) continue;
+          if (!emitted && attempt + 1 < maxAttempts) {
+            this.scheduleReplacementPrewarm(attempted, model);
+            continue;
+          }
         } else if (isPermissionDeniedError(error)) {
           // 首次 403 不足以证明账号缺少模型权限：proof、动态头或页面 runtime 损坏也会返回同样的 Code 7。
           // 未向客户端发出流数据时，销毁浏览器并固定同账号确认一次；只有第二次仍为 403 才持久化 denied。
@@ -762,14 +842,20 @@ export class NativeBackendBridge implements BackendBridge {
             }
           }
           await this.rotator.recordDenied(account.id, model);
-          if (!emitted && attempt + 1 < maxAttempts) continue;
+          if (!emitted && attempt + 1 < maxAttempts) {
+            this.scheduleReplacementPrewarm(attempted, model);
+            continue;
+          }
           throw lastError;
         } else {
           this.rotator.recordError(account.id);
           if (isRetryableGatewayError(error)) {
             // 5xx/网络/浏览器故障：当前会话不可信，收尾后关闭并无缝切温热备用实例。
             this.gatewayPendingClose.add(account.id);
-            if (!emitted && attempt + 1 < maxAttempts) continue;
+            if (!emitted && attempt + 1 < maxAttempts) {
+              this.scheduleReplacementPrewarm(attempted, model);
+              continue;
+            }
           }
         }
         throw error;

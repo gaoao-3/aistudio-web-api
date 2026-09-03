@@ -126,6 +126,17 @@ const SETTING_DEFS: ReadonlyArray<SettingDef> = [
     readEffective: () => settings.browserMaxAliveInstances,
   },
   {
+    key: "browser_standby_idle_timeout_ms",
+    env: "AISTUDIO_BROWSER_STANDBY_IDLE_TIMEOUT_MS",
+    label: "备用浏览器空闲回收时间",
+    description: "非当前激活账号的备用浏览器空闲多久后关闭上下文；账号 Profile 和 Cookie 保留，下次请求会重新启动。0 表示禁用",
+    type: "integer",
+    min: 0,
+    unit: "毫秒",
+    defaultValue: 600_000,
+    readEffective: () => settings.browserStandbyIdleTimeoutMs,
+  },
+  {
     key: "browser_evict_grace_ms",
     env: "AISTUDIO_BROWSER_EVICT_GRACE_MS",
     label: "浏览器淘汰宽限期",

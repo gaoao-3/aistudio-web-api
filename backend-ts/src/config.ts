@@ -66,7 +66,9 @@ export const settings = {
   browserIdleTimeoutMs: Math.max(0, intEnv("AISTUDIO_BROWSER_IDLE_TIMEOUT_MS", 0)),
   // 同时保活的账号浏览器实例数上限（LRU 淘汰最久未用的）；0 = 不限制。每个实例约 500MB 内存。
   browserMaxAliveInstances: Math.max(0, intEnv("AISTUDIO_BROWSER_MAX_ALIVE_INSTANCES", 2)),
-  // 淘汰宽限期：超上限时只关闭空闲超过该时长的实例，避免高频轮询下反复冷启动。
+  // 非当前激活账号的备用浏览器空闲回收时间；仅关闭浏览器上下文，保留账号 Profile。0 = 禁用。
+  browserStandbyIdleTimeoutMs: Math.max(0, intEnv("AISTUDIO_BROWSER_STANDBY_IDLE_TIMEOUT_MS", 10 * 60 * 1000)),
+  // 淘汰宽限期：超上限时只关闭空闲超过该时长的实例，避免高频轮询时反复冷启动。
   browserEvictGraceMs: Math.max(0, intEnv("AISTUDIO_BROWSER_EVICT_GRACE_MS", 60 * 1000)),
   browserTimeoutMs: intEnv("AISTUDIO_BROWSER_TIMEOUT_MS", 120_000),
   // Overall watchdog for any single browser-session operation. The in-page

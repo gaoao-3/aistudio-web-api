@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { describe, it } from "node:test";
 import { AccountStore } from "../src/accounts/account-store.js";
 import { NativeBackendBridge, type NativeGatewayBackend } from "../src/bridge/native-bridge.js";
@@ -230,6 +231,104 @@ describe("native gateway bridge", () => {
       assert.equal(gateways.size, 1);
       assert.deepEqual([...gateways.values()].map(gateway => gateway.calls.length), [2]);
     } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reclaims an idle standby gateway without closing the active account", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aistudio-native-standby-"));
+    const originalStandbyTimeout = settings.browserStandbyIdleTimeoutMs;
+    settings.browserStandbyIdleTimeoutMs = 1_000;
+    let bridge: NativeBackendBridge | undefined;
+    try {
+      const accountStore = new AccountStore(join(directory, "accounts"));
+      await accountStore.saveStorageState({
+        name: "A",
+        email: "a@example.com",
+        storageState: { cookies: [{ name: "SID", value: "a", domain: ".google.com", path: "/" }], origins: [] },
+      });
+      await accountStore.saveStorageState({
+        name: "B",
+        email: "b@example.com",
+        storageState: { cookies: [{ name: "SID", value: "b", domain: ".google.com", path: "/" }], origins: [] },
+      });
+      const accounts = await accountStore.list();
+      const closed: string[] = [];
+      const factory = (authFile: string): FakeGateway => {
+        const accountId = basename(dirname(authFile));
+        const gateway = new FakeGateway();
+        gateway.close = async () => { closed.push(accountId); };
+        return gateway;
+      };
+      bridge = new NativeBackendBridge(
+        new FakeGateway(),
+        accountStore,
+        new StatsStore(join(directory, "stats.json")),
+        undefined,
+        factory,
+        freshCache(),
+      );
+      await bridge.start();
+      await delay(1_100);
+      const snapshot = await bridge.request<{ browsers_alive: number }>("stats");
+      assert.equal(snapshot.browsers_alive, 1);
+      assert.deepEqual(closed, [accounts[1]!.id]);
+    } finally {
+      await bridge?.stop();
+      settings.browserStandbyIdleTimeoutMs = originalStandbyTimeout;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("prewarms the next account after a failed warm gateway", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aistudio-native-prewarm-"));
+    let bridge: NativeBackendBridge | undefined;
+    try {
+      const accountStore = new AccountStore(join(directory, "accounts"));
+      for (const [name, email] of [["A", "a@example.com"], ["B", "b@example.com"], ["C", "c@example.com"]] as const) {
+        await accountStore.saveStorageState({
+          name,
+          email,
+          storageState: { cookies: [{ name: "SID", value: name, domain: ".google.com", path: "/" }], origins: [] },
+        });
+      }
+      const accounts = await accountStore.list();
+      const created = new Set<string>();
+      const closed: string[] = [];
+      const factory = (authFile: string): FakeGateway => {
+        const accountId = basename(dirname(authFile));
+        const gateway = new FakeGateway();
+        created.add(accountId);
+        gateway.close = async () => { closed.push(accountId); };
+        if (accountId === accounts[0]?.id) {
+          gateway.errors.push(new Error("AI Studio upstream returned HTTP 500"));
+        } else {
+          gateway.responses.push({ candidates: [{ content: { parts: [{ text: accountId }] } }] });
+        }
+        return gateway;
+      };
+      bridge = new NativeBackendBridge(
+        new FakeGateway(),
+        accountStore,
+        new StatsStore(join(directory, "stats.json")),
+        undefined,
+        factory,
+        freshCache(),
+      );
+      await bridge.start();
+      await delay(10);
+      const result = await bridge.request<Record<string, unknown>>("generate", {
+        model: "gemini-test",
+        body: { turn: "replace-failed-account" },
+      });
+      assert.equal((result.candidates as Record<string, unknown>[])[0]?.content !== undefined, true);
+      await delay(10);
+      const snapshot = await bridge.request<{ browsers_alive: number }>("stats");
+      assert.equal(snapshot.browsers_alive, 2);
+      assert.equal(created.has(accounts[2]!.id), true);
+      assert.deepEqual(closed, [accounts[0]!.id]);
+    } finally {
+      await bridge?.stop();
       await rm(directory, { recursive: true, force: true });
     }
   });
