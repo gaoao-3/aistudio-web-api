@@ -582,10 +582,20 @@ pnpm dev:frontend
 
 ## 💖 致谢
 
-- [chrysoljq/aistudio-api](https://github.com/chrysoljq/aistudio-api)
-- [LuanRT/BgUtils](https://github.com/LuanRT/BgUtils)
-- [iBUHub/AIStudioToAPI](https://github.com/iBUHub/AIStudioToAPI)
-- [linux.do](https://linux.do)
+本项目是在以下开源项目和社区资料基础上持续重写、验证和扩展的，感谢所有维护者与贡献者：
+
+### 上游项目与协议研究
+
+- [chrysoljq/aistudio-api](https://github.com/chrysoljq/aistudio-api) — 本项目早期 Python 版本的上游基础；账号管理、AI Studio 网页网关和部分 WebUI 设计由此开始，后续已逐步重写为 TypeScript。
+- [LuanRT/BgUtils](https://github.com/LuanRT/BgUtils) — BotGuard snapshot 的研究与实现资料。
+- [iBUHub/AIStudioToAPI](https://github.com/iBUHub/AIStudioToAPI) — AI Studio 网页协议、请求流程和 API 适配的参考实现。
+- [Mag1cFall/AIStudio2API](https://github.com/Mag1cFall/AIStudio2API) — OpenAI 兼容适配、AI Studio wire 协议、稀疏 JSON 解析和模型参数默认值的参考实现。
+- [CloakHQ/cloakbrowser](https://github.com/CloakHQ/cloakbrowser) — 本项目运行时使用的隐身 Chromium / Playwright 浏览器实现。
+
+### 交互与社区参考
+
+- [QuantumNous/new-api](https://github.com/QuantumNous/new-api) — 请求日志页面呈现方式的参考。
+- [linux.do](https://linux.do) — AI Studio 网页协议、模型变化和部署实践的社区讨论与现场资料。
 
 ---
 

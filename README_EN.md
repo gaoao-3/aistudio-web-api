@@ -298,10 +298,20 @@ Account rotation automatically cools down the current account and fails over to 
 
 ## 🙏 Acknowledgements
 
-- [chrysoljq/aistudio-api](https://github.com/chrysoljq/aistudio-api) — upstream project
-- [LuanRT/BgUtils](https://github.com/LuanRT/BgUtils)
-- [iBUHub/AIStudioToAPI](https://github.com/iBUHub/AIStudioToAPI)
-- [linux.do](https://linux.do)
+This project has been continuously rewritten, verified, and extended with help from the following open-source projects and community resources. Thanks to all their maintainers and contributors.
+
+### Upstream projects and protocol research
+
+- [chrysoljq/aistudio-api](https://github.com/chrysoljq/aistudio-api) — upstream basis for the early Python version of this project; the account management, AI Studio web gateway, and part of the WebUI started there before the gradual TypeScript rewrite.
+- [LuanRT/BgUtils](https://github.com/LuanRT/BgUtils) — research and implementation reference for BotGuard snapshots.
+- [iBUHub/AIStudioToAPI](https://github.com/iBUHub/AIStudioToAPI) — reference implementation for AI Studio web protocols, request flows, and API adaptation.
+- [Mag1cFall/AIStudio2API](https://github.com/Mag1cFall/AIStudio2API) — reference for the OpenAI-compatible adapter, AI Studio wire protocol, sparse JSON parsing, and model parameter defaults.
+- [CloakHQ/cloakbrowser](https://github.com/CloakHQ/cloakbrowser) — the stealth Chromium / Playwright browser implementation used at runtime.
+
+### UI and community references
+
+- [QuantumNous/new-api](https://github.com/QuantumNous/new-api) — reference for the presentation of the request-log page.
+- [linux.do](https://linux.do) — community discussions and field reports about AI Studio web protocols, model changes, and deployment.
 
 ## 📄 License
 
