@@ -90,7 +90,7 @@ flowchart TD
 - 一个可以正常访问 [Google AI Studio](https://aistudio.google.com/) 的 Google 账号
 - 本机登录、远程辅助登录或 Cookie 导入方式三选一
 - 如果部署在局域网或公网，建议配置 API Key 并使用 HTTPS 反向代理
-- 不想本地装 Node.js/pnpm 也可以直接使用 [Docker 部署](#-docker-部署)
+- 不想本地装 Node.js/pnpm 也可以直接使用 [Docker 部署](#docker-deployment)
 
 ---
 
