@@ -99,8 +99,8 @@ flowchart TD
 
 ```bash
 # 1. 克隆项目并进入目录
-git clone https://github.com/gaoao-3/aistudio-api.git
-cd aistudio-api
+git clone https://github.com/gaoao-3/aistudio-web-api.git
+cd aistudio-web-api
 
 # 2. 安装前后端依赖
 pnpm run setup

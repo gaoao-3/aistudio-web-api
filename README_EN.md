@@ -71,8 +71,8 @@ Ciallo～(∠・ω< )⌒☆
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/gaoao-3/aistudio-api.git
-cd aistudio-api
+git clone https://github.com/gaoao-3/aistudio-web-api.git
+cd aistudio-web-api
 
 # 2. Install frontend and backend dependencies
 pnpm run setup
