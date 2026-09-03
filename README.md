@@ -29,22 +29,23 @@ Ciallo～(∠・ω< )⌒☆
 ---
 
 <p align="center">
-  <a href="#-项目定位">项目定位</a> ·
-  <a href="#-功能特性">功能特性</a> ·
-  <a href="#-运行前提">运行前提</a> ·
-  <a href="#-快速开始">快速开始</a> ·
-  <a href="#-首次登录">首次登录</a> ·
-  <a href="#-鉴权">鉴权</a> ·
-  <a href="#-api-用法">API 用法</a> ·
-  <a href="#-webui">WebUI</a> ·
-  <a href="#-账号轮询">账号轮询</a> ·
-  <a href="#-配置">配置</a> ·
-  <a href="#-docker-部署">Docker 部署</a> ·
-  <a href="#-常见问题">常见问题</a>
+  <a href="#project-position">项目定位</a> ·
+  <a href="#feature-list">功能特性</a> ·
+  <a href="#prerequisites">运行前提</a> ·
+  <a href="#quick-start">快速开始</a> ·
+  <a href="#first-login">首次登录</a> ·
+  <a href="#authentication">鉴权</a> ·
+  <a href="#api-usage">API 用法</a> ·
+  <a href="#webui">WebUI</a> ·
+  <a href="#account-rotation">账号轮询</a> ·
+  <a href="#configuration">配置</a> ·
+  <a href="#docker-deployment">Docker 部署</a> ·
+  <a href="#faq">常见问题</a>
 </p>
 
 ---
 
+<a id="project-position"></a>
 ## 🎯 项目定位
 
 本项目把 **Google AI Studio 网页版**转换成一个可自托管的 API 服务——无需官方 API Key，登录即用。
@@ -63,6 +64,7 @@ flowchart TD
 
 ---
 
+<a id="feature-list"></a>
 ## ✨ 功能特性
 
 | | 能力 | 说明 |
@@ -80,6 +82,7 @@ flowchart TD
 
 ---
 
+<a id="prerequisites"></a>
 ## 📋 运行前提
 
 - [Node.js](https://nodejs.org/) 22 或兼容版本
@@ -91,6 +94,7 @@ flowchart TD
 
 ---
 
+<a id="quick-start"></a>
 ## 🚀 快速开始
 
 ```bash
@@ -143,6 +147,7 @@ AISTUDIO_RUNTIME_ROOT=D:/path/to/aistudio-runtime
 
 ---
 
+<a id="first-login"></a>
 ## 🔑 首次登录
 
 启动后按以下顺序操作：
@@ -159,6 +164,7 @@ AISTUDIO_RUNTIME_ROOT=D:/path/to/aistudio-runtime
 
 ---
 
+<a id="authentication"></a>
 ## 🔐 鉴权
 
 未配置 API Key 时，接口默认不要求鉴权，适合本机临时使用。配置 `AISTUDIO_API_KEY` 或 `AISTUDIO_API_KEYS` 后，可以使用以下任一形式：
@@ -182,6 +188,7 @@ API 请求中的内置原生工具声明会被移除，不会发送到 AI Studio
 
 ---
 
+<a id="api-usage"></a>
 ## 📚 API 用法
 
 > [!NOTE]
@@ -408,6 +415,7 @@ for chunk in stream:
 说明：思考内容以 `reasoning_content` 字段返回（流式为增量帧）；错误统一返回 OpenAI 风格 `{"error": {"message", "type", "code"}}`；鉴权与 Gemini 路由一致（`Authorization: Bearer` 或 `x-api-key`）。远程图片 URL 不支持，请改用 data URI。
 
 ---
+<a id="webui"></a>
 ## 🖥️ WebUI
 
 | 页面 | 能力 |
@@ -423,6 +431,7 @@ for chunk in stream:
 
 ---
 
+<a id="account-rotation"></a>
 ## 🔁 账号轮询
 
 账号页面支持多个 Google 账号。可选策略：
@@ -442,6 +451,7 @@ for chunk in stream:
 
 ---
 
+<a id="configuration"></a>
 ## ⚙️ 配置
 
 配置可以放在运行目录的 `.env` 文件，也可以使用环境变量。完整示例见 [.env.example](./.env.example)。
@@ -510,6 +520,7 @@ for chunk in stream:
 
 ---
 
+<a id="docker-deployment"></a>
 ## 🐳 Docker 部署
 
 项目提供多阶段 `Dockerfile` 和 `docker-compose.yml`：镜像内完成前端构建、后端编译，并预下载 CloakBrowser 隐身 Chromium，容器首启无需再联网下载浏览器。
@@ -559,6 +570,7 @@ pnpm dev:frontend
 
 ---
 
+<a id="faq"></a>
 ## ❓ 常见问题
 
 **请求时报 `AI Studio streaming request failed: TypeError: Failed to fetch`？**
