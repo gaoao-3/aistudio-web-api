@@ -46,7 +46,8 @@ html[data-theme='dark'] {
   --border-soft: rgba(255, 255, 255, 0.09);
   --text: #e4e2e6;
   --text-2: #c4c6cc;
-  --muted: #8e9099;
+  /* 小号辅助文字会出现在 surface-3 上，使用更高对比度避免深色模式发灰 */
+  --muted: #b0b2bb;
   --danger: #f2b8b5;
   --danger-bg: rgba(242, 184, 181, 0.12);
   --ok: #7fc99a;
