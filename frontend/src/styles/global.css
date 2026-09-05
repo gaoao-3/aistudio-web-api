@@ -125,46 +125,26 @@ html[data-theme='dark'] .v-btn-toggle .v-btn.v-btn--active {
 }
 .v-btn-toggle .v-btn__overlay { display: none; }
 
-/* Vuetify 4 的强制颜色（高对比度）回退把选中/激活态染成系统 highlight 色，
-   部分 Android 浏览器/ WebView 会误触发，导致深色底 + 深色文字看不清。
-   统一覆盖为主题感知的可读配色。 */
+/* Vuetify 4 的强制颜色（高对比度）回退把选中/激活态染成系统 highlight 色。
+   部分 Android 浏览器/WebView 误触发 forced-colors 时，系统调色板不可控
+   （有的 highlight 深底深字、有的白底白字），且 forced 色优先级高于 !important，
+   只能靠 forced-color-adjust:none 让这些组件保持主题配色。 */
 @media (forced-colors: active) {
+  .v-list-item, .v-list, .v-card, .v-sheet, .v-overlay__content,
+  .v-btn-toggle .v-btn, .v-tab, .v-switch, .v-slider,
+  .v-icon-btn, .v-badge, .v-chip, .v-btn, .v-field {
+    forced-color-adjust: none;
+  }
+  /* Vuetify 的强制颜色规则会把 overlay 的 opacity 硬拉成 1，currentColor 变成
+     实心色块盖住整行；压回 0，选中态用下面的 background 表达。 */
+  .v-list-item .v-list-item__overlay { opacity: 0 !important; }
   .v-list-item--active:not(.v-list-item--variant-text, .v-list-item--variant-plain):not(.v-list-item--disabled) {
-    background: var(--primary-container) !important;
+    background: var(--primary-container);
   }
   .v-list-item--active:not(.v-list-item--disabled) [class*=v-list-item-],
   .v-list-item--active:not(.v-list-item--disabled) [class*=v-list-item-] > *,
   .v-list-item--active:not(.v-list-item--disabled) .v-icon {
-    color: var(--text) !important;
-  }
-  .v-btn-toggle > .v-btn--active:not(.v-btn--variant-text, .v-btn--variant-plain) {
-    background-color: var(--primary) !important;
-    color: var(--on-primary) !important;
-    border-color: var(--primary) !important;
-  }
-  .v-btn-toggle > .v-btn:not(.v-btn--disabled):not(.v-btn--active):hover,
-  .v-btn-toggle > .v-btn:not(.v-btn--disabled):not(.v-btn--active):focus-visible {
-    color: var(--text) !important;
-  }
-  .v-tab--selected.v-btn { color: var(--primary-bright) !important; }
-  .v-tab__slider { background: var(--primary) !important; }
-  .v-switch:not(.v-switch--loading):not(.v-input--disabled) .v-selection-control--dirty .v-switch__thumb,
-  .v-switch:not(.v-input--disabled) .v-selection-control--dirty .v-switch__track {
-    background-color: var(--primary) !important;
-  }
-  .v-slider-thumb__surface,
-  .v-slider-track__fill { background-color: var(--primary) !important; }
-  .v-slider-track__background { background-color: var(--surface-3) !important; }
-  .v-icon-btn--active:not(.v-icon-btn--disabled),
-  .v-icon-btn--active:not(.v-icon-btn--disabled)[class*=bg-] {
-    background: var(--primary-container) !important;
-    color: var(--primary-bright) !important;
-  }
-  .v-icon-btn:not(.v-icon-btn--active):hover,
-  .v-icon-btn:not(.v-icon-btn--active):focus { color: var(--text) !important; }
-  .v-badge .v-badge__badge {
-    background: var(--primary) !important;
-    color: var(--on-primary) !important;
+    color: var(--text);
   }
 }
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -200,6 +200,8 @@ test("fresh model catalog snapshot is served directly while a background refresh
   // 第二次请求：快照 5 分钟内视为新鲜，直读返回；后台刷新会额外调用一次 bridge
   const second = await app.inject({ method: "GET", url: "/v1beta/models" });
   assert.equal(second.json().source, "snapshot");
+  // 正常 stale-while-revalidate 不算实时目录失败
+  assert.equal(second.json().liveFailed, undefined);
   assert.equal(second.json().models[0].name, "models/gemini-fresh");
   const modelCalls = () => bridge.calls.filter((call) => call.method === "models").length;
   assert.equal(modelCalls(), 2); // 首次 live + 后台刷新
@@ -282,6 +284,27 @@ class BackgroundBridge extends MockBridge {
     return new Promise<T>((resolve, reject) => { this.resolve = value => resolve(value as T); this.reject = reject; });
   }
 }
+
+test("stale snapshot reports liveFailed when the live catalog is unreachable", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "aistudio-fastify-stale-"));
+  const modelCatalogFile = join(directory, "model-catalog.json");
+  // 过期快照 + 空目录 bridge（实时拉取拿不到模型）
+  await writeFile(modelCatalogFile, JSON.stringify({
+    updated_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+    models: [{ name: "models/gemini-stale" }],
+  }));
+  const app = await buildApp({
+    services: { bridge: new MockBridge(), apiKeys: new ApiKeyStore(join(directory, "apikeys.json")) },
+    logger: false,
+    serveStatic: false,
+    modelCatalogFile,
+  });
+  t.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
+  const response = await app.inject({ method: "GET", url: "/v1beta/models" });
+  assert.equal(response.json().source, "snapshot");
+  assert.equal(response.json().liveFailed, true);
+  assert.equal(response.json().models[0].name, "models/gemini-stale");
+});
 
 test("background interactions return promptly and poll completed results", { timeout: 5000 }, async (t) => {
   const bridge = new BackgroundBridge();

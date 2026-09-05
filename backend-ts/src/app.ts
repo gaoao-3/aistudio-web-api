@@ -541,6 +541,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   async function availableModels(): Promise<{
     readonly models: Record<string, unknown>[];
     readonly source: "live" | "snapshot" | "fallback";
+    /** true 表示实时目录拉取失败、正在用旧快照/兜底列表（新鲜快照的正常 stale-while-revalidate 不算） */
+    readonly liveFailed?: boolean;
   }> {
     const snapshot = await readModelCatalogSnapshot(modelCatalogFile);
     // 快照足够新鲜：直接返回并在后台刷新，列表请求不再等待一次 AI Studio 拉取。
@@ -561,8 +563,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     } catch (error) {
       app.log.warn({ err: error }, "读取 AI Studio 模型目录失败，尝试使用上次同步目录");
     }
-    if (snapshot) return { models: snapshot.models, source: "snapshot" };
-    return { models: FALLBACK_MODELS.map(modelCard), source: "fallback" };
+    if (snapshot) return { models: snapshot.models, source: "snapshot", liveFailed: true };
+    return { models: FALLBACK_MODELS.map(modelCard), source: "fallback", liveFailed: true };
   }
 
   app.get("/v1beta/models", async () => availableModels());

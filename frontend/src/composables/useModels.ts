@@ -5,6 +5,7 @@ import { model, models } from './useCache';
 interface ModelsResponse {
   models?: { name?: string }[];
   source?: 'live' | 'snapshot' | 'fallback';
+  liveFailed?: boolean;
 }
 
 let fallbackNoticeShown = false;
@@ -29,7 +30,9 @@ export function useModels() {
       models.value = d.models
         .map(m => ({ id: (m.name || '').replace('models/', '') }))
         .filter(m => m.id && !/^(antigravity|deep-research)/.test(m.id));
-      if (d.source === 'snapshot' && !snapshotNoticeShown) {
+      // 新鲜快照 + 后台刷新是正常 stale-while-revalidate，不打扰；
+      // 只有实时拉取失败（liveFailed）或兜底列表才提示。
+      if (d.source === 'snapshot' && d.liveFailed && !snapshotNoticeShown) {
         snapshotNoticeShown = true;
         toastInfo('实时模型目录暂不可用，当前使用上次同步目录');
       } else if (d.source === 'fallback' && !fallbackNoticeShown) {
