@@ -1,6 +1,6 @@
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
-import { runtimeRoot } from "../config.js";
+import { runtimeRoot, settings } from "../config.js";
 import { NativeBrowserSession, type AuthRefreshResult, type BrowserReplayResponse } from "./browser-session.js";
 import { normalizeGeminiRequest, type NormalizedGeminiRequest } from "./gemini-normalize.js";
 import { parseAIStudioResponse, toGeminiResponse, type ParsedAIStudioResponse } from "./response-parser.js";
@@ -8,6 +8,7 @@ import { encodeCountTokensBody, rewriteWireBody } from "./wire-codec.js";
 import type { AistudioContent, AistudioPart } from "./wire-codec.js";
 import { fetchCountTokens, fetchModelCatalog } from "./model-catalog.js";
 import { validateGenerationConfig } from "./generation-limits.js";
+import { validateHardToolRules, validateRequestedTools } from "./tool-validation.js";
 import { IncrementalAIStudioParser } from "./incremental-parser.js";
 import { assertProtocolCapability } from "./protocol-capabilities.js";
 import type { AccountProfile } from "../accounts/account-profile.js";
@@ -33,6 +34,10 @@ interface ToolGroups {
 
 function isFunctionTool(tool: unknown[]): boolean {
   return Array.isArray(tool[1]) && tool[1].length > 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function partitionMixedTools(tools: unknown[][] | null): ToolGroups {
@@ -160,6 +165,8 @@ function hasFunctionResponse(contents: readonly AistudioContent[]): boolean {
 
 export class NativeGateway {
   private modelCache: { readonly expires: number; readonly models: Record<string, unknown>[] } | undefined;
+  private modelFetch: Promise<Record<string, unknown>[]> | undefined;
+  private authEpoch = 0;
   constructor(private readonly session = new NativeBrowserSession()) {}
 
   async warmup(): Promise<void> {
@@ -168,24 +175,42 @@ export class NativeGateway {
 
   async refreshAuth(): Promise<AuthRefreshResult> {
     const result = await this.session.refreshAuth();
-    if (result.status === "refreshed" || result.status === "still_healthy") this.modelCache = undefined;
+    if (result.status === "refreshed" || result.status === "still_healthy") {
+      this.authEpoch += 1;
+      this.modelCache = undefined;
+    }
     return result;
   }
 
   async switchAuth(authFile: string): Promise<void> {
     await this.session.switchAuth(authFile);
+    this.authEpoch += 1;
     this.modelCache = undefined;
   }
 
+  // 目录缓存 miss 时合并并发拉取（singleflight）；auth 切换后过期的在途结果不会污染缓存。
   async models(): Promise<Record<string, unknown>[]> {
     if (this.modelCache && this.modelCache.expires > Date.now()) return structuredClone(this.modelCache.models);
-    const models = await fetchModelCatalog(this.session);
-    this.modelCache = { models: structuredClone(models), expires: Date.now() + MODEL_CATALOG_CACHE_TTL_MS };
-    return models;
+    const epoch = this.authEpoch;
+    if (!this.modelFetch) {
+      this.modelFetch = fetchModelCatalog(this.session)
+        .then((models) => {
+          if (this.authEpoch === epoch) {
+            this.modelCache = { models: structuredClone(models), expires: Date.now() + MODEL_CATALOG_CACHE_TTL_MS };
+          }
+          return models;
+        })
+        .finally(() => {
+          this.modelFetch = undefined;
+        });
+    }
+    return structuredClone(await this.modelFetch);
   }
 
-  /** 基于 ListModels 目录校验 generation 参数；目录不可用时 fail-open 不阻塞请求。 */
-  private async validateGeneration(normalized: NormalizedGeminiRequest): Promise<void> {
+  /** 基于 ListModels 目录校验 generation 参数与工具能力；目录不可用时 fail-open 不阻塞请求。 */
+  private async validateGeneration(normalized: NormalizedGeminiRequest, rawBody: unknown): Promise<void> {
+    // 硬规则（工具组合冲突、模型类别限制）不依赖目录，始终执行
+    validateHardToolRules(normalized.model, isRecord(rawBody) ? rawBody.tools : undefined);
     let models: Record<string, unknown>[];
     try {
       models = await this.models();
@@ -194,6 +219,31 @@ export class NativeGateway {
     }
     const entry = models.find(item => item.name === normalized.model);
     validateGenerationConfig(entry, normalized.generationConfig);
+    validateRequestedTools(entry, normalized.model, isRecord(rawBody) ? rawBody.tools : undefined);
+  }
+
+  /**
+   * 计算默认 thinkingLevel：仅当请求未显式指定且模型目录声明支持时注入；
+   * 目录不可用 fail-open 注入（修复 gemini-3.8-flash 搜索场景拒绝 MINIMAL 的上游行为）。
+   */
+  private async defaultThinkingLevelFor(model: string, body: unknown): Promise<string | undefined> {
+    const level = settings.defaultThinkingLevel;
+    if (!level) return undefined;
+    if (isRecord(body) && isRecord(body.generationConfig) && body.generationConfig.thinkingConfig !== undefined) return undefined;
+    const levelCodes: Readonly<Record<string, number>> = { LOW: 1, MEDIUM: 2, HIGH: 3, MINIMAL: 4 };
+    const code = levelCodes[level];
+    if (code === undefined) return undefined;
+    try {
+      const models = await this.models();
+      const name = model.startsWith("models/") ? model : `models/${model}`;
+      const entry = models.find(item => item.name === name);
+      if (!entry) return level;
+      const supported = Array.isArray(entry.thinkingLevels) ? entry.thinkingLevels : undefined;
+      if (!supported) return level;
+      return supported.includes(code) ? level : undefined;
+    } catch {
+      return level;
+    }
   }
 
   async countTokens(model: string, body: unknown): Promise<Record<string, unknown>> {
@@ -236,8 +286,8 @@ export class NativeGateway {
     options?: NativeGenerationOptions,
   ): Promise<Record<string, unknown>> {
     assertProtocolCapability("generateContent");
-    const normalized = normalizeGeminiRequest(model, body);
-    await this.validateGeneration(normalized);
+    const normalized = normalizeGeminiRequest(model, body, { thinkingLevel: await this.defaultThinkingLevelFor(model, body) });
+    await this.validateGeneration(normalized, body);
     const template = await this.session.captureTemplate(normalized.model);
     const generation = normalized.generationConfig;
     const makeBody = async (

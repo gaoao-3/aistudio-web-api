@@ -25,6 +25,119 @@ function fakeSession(
   } as unknown as NativeBrowserSession;
 }
 
+describe("native gateway tool validation", () => {
+  it("rejects function declarations on image models before any upstream call", async () => {
+    const gateway = new NativeGateway(fakeSession(wireResponse(3)));
+    try {
+      await assert.rejects(
+        gateway.generate("gemini-3.1-flash-image", {
+          contents: [{ role: "user", parts: [{ text: "draw" }] }],
+          tools: [{ functionDeclarations: [{ name: "getWeather" }] }],
+        }),
+        (error: unknown) => {
+          const detail = (error as { detail?: { message?: unknown } }).detail;
+          return /image 生成模型不支持 function declarations/u.test(String(detail?.message ?? error));
+        },
+      );
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("rejects google_maps combined with code_execution even when the catalog is unavailable", async () => {
+    // fakeSession 没有 pageFetch/cookies：models() 拉取失败 → generation 校验 fail-open，
+    // 但硬规则独立于目录仍然生效。
+    const gateway = new NativeGateway(fakeSession(wireResponse(3)));
+    try {
+      await assert.rejects(
+        gateway.generate("gemini-3.8-flash", {
+          contents: [{ role: "user", parts: [{ text: "where" }] }],
+          tools: [{ googleMaps: {} }, { codeExecution: {} }],
+        }),
+        (error: unknown) => {
+          const detail = (error as { detail?: { message?: unknown } }).detail;
+          return /google_maps 不能与/u.test(String(detail?.message ?? error));
+        },
+      );
+    } finally {
+      await gateway.close();
+    }
+  });
+});
+
+describe("native gateway model catalog cache", () => {
+  function catalogSession() {
+    let pageFetches = 0;
+    const session = {
+      captureTemplate: async () => ({
+        url: "https://aistudio.google.com/",
+        headers: { "x-goog-api-key": "test-key" } as Readonly<Record<string, string>>,
+        body: "[]" as string,
+      }),
+      cookies: async () => [
+        { name: "SAPISID", value: "s" },
+        { name: "SAPISIDHASH", value: "sh" },
+        { name: "__Secure-1PSID", value: "p1" },
+        { name: "SAPISID1PHASH", value: "p1h" },
+        { name: "__Secure-3PSID", value: "p3" },
+        { name: "SAPISID3PHASH", value: "p3h" },
+      ] as { name: string; value: string }[],
+      pageFetch: async () => {
+        pageFetches += 1;
+        return { status: 200, body: JSON.stringify([[["models/gemini-single", "", "", "Gemini Single", "desc", 1000, 2000, ["generateContent"]]]]) };
+      },
+      refreshAuth: async () => ({ status: "refreshed" }),
+      switchAuth: async () => undefined,
+      close: async () => undefined,
+      warmup: async () => undefined,
+    };
+    return {
+      session: session as unknown as NativeBrowserSession,
+      pageFetches: () => pageFetches,
+    };
+  }
+
+  it("coalesces concurrent catalog fetches and serves the TTL cache", async () => {
+    const { session, pageFetches } = catalogSession();
+    const gateway = new NativeGateway(session);
+    try {
+      const results = await Promise.all([gateway.models(), gateway.models(), gateway.models()]);
+      assert.equal(pageFetches(), 1);
+      assert.equal(results[0]![0]!.name, "models/gemini-single");
+      // TTL 窗口内命中缓存，不再发 ListModels
+      assert.equal((await gateway.models())[0]!.name, "models/gemini-single");
+      assert.equal(pageFetches(), 1);
+      // 认证刷新后目录失效，重新拉取
+      await gateway.refreshAuth();
+      assert.equal((await gateway.models())[0]!.name, "models/gemini-single");
+      assert.equal(pageFetches(), 2);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("rejects on catalog failure and allows the next call to retry", async () => {
+    let fail = true;
+    const { session, pageFetches } = catalogSession();
+    const failing = {
+      ...session,
+      pageFetch: async () => {
+        pageFetches();
+        if (fail) return { status: 500, body: "boom" };
+        return { status: 200, body: JSON.stringify([[["models/gemini-single", "", "", "Gemini Single", "desc", 1000, 2000, ["generateContent"]]]]) };
+      },
+    } as unknown as NativeBrowserSession;
+    const gateway = new NativeGateway(failing);
+    try {
+      await assert.rejects(gateway.models(), /ListModels returned HTTP 500/u);
+      fail = false;
+      assert.equal((await gateway.models())[0]!.name, "models/gemini-single");
+    } finally {
+      await gateway.close();
+    }
+  });
+});
+
 describe("upstream quota signals", () => {
   it("classifies quota responses and extracts retry metadata", () => {
     assert.deepEqual(

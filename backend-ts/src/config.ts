@@ -33,6 +33,12 @@ function boolEnv(name: string, fallback: boolean): boolean {
   return !["0", "false", "no", "off"].includes(raw);
 }
 
+function defaultThinkingLevelEnv(): "LOW" | "MEDIUM" | "HIGH" | "MINIMAL" | undefined {
+  const raw = process.env.AISTUDIO_DEFAULT_THINKING_LEVEL?.trim().toUpperCase();
+  if (raw === "LOW" || raw === "MEDIUM" || raw === "HIGH" || raw === "MINIMAL") return raw;
+  return undefined;
+}
+
 function optionalEnv(name: string): string | undefined {
   const value = process.env[name]?.trim();
   return value || undefined;
@@ -105,5 +111,8 @@ export const settings = {
   accountMaxRetries: Math.max(1, intEnv("AISTUDIO_ACCOUNT_MAX_RETRIES", 3)),
   accountProfileRefreshMs: Math.max(60_000, intEnv("AISTUDIO_ACCOUNT_PROFILE_REFRESH_MS", 6 * 60 * 60 * 1000)),
   modelDefaultsFile: resolve(process.env.AISTUDIO_MODEL_DEFAULTS_FILE ?? join(runtimeRoot, "config.yaml")),
+  // 部分模型（如 gemini-3.8-flash 的搜索场景）上游拒绝默认 MINIMAL 思考级别；
+  // 请求未显式指定 thinkingConfig 时按此默认值补齐（LOW/MEDIUM/HIGH/MINIMAL）。
+  defaultThinkingLevel: defaultThinkingLevelEnv(),
   configuredApiKeys: envKeys(),
 };

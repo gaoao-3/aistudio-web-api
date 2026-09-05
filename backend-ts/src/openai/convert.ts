@@ -55,6 +55,7 @@ function rememberThoughtSignature(callId: string | undefined, signature: unknown
   }
   thoughtSignatureByCallId.set(callId, signature);
 }
+export { rememberThoughtSignature };
   
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -113,7 +114,7 @@ function convertFilePart(
   );
 }
 
-function convertUserPart(part: unknown): Record<string, unknown> {
+export function convertUserPart(part: unknown): Record<string, unknown> {
   if (typeof part === "string") return { text: part };
   if (!isRecord(part)) return fail("messages[].content[] 部件格式无效");
   if (
@@ -150,7 +151,7 @@ function convertUserPart(part: unknown): Record<string, unknown> {
   );
 }
 
-function thoughtSignatureOf(value: unknown): string | undefined {
+export function thoughtSignatureOf(value: unknown): string | undefined {
   if (!isRecord(value)) return undefined;
   const direct =
     typeof value.thoughtSignature === "string" && value.thoughtSignature
@@ -214,7 +215,7 @@ function convertToolCall(
   };
 }
 
-function convertMessages(messages: unknown[]): {
+export function convertMessages(messages: unknown[]): {
   readonly contents: Record<string, unknown>[];
   readonly system: string[];
 } {
@@ -307,7 +308,7 @@ function convertMessages(messages: unknown[]): {
   return { contents, system };
 }
 
-function convertTools(
+export function convertTools(
   body: Record<string, unknown>,
 ): Record<string, unknown> | null {
   if (body.tools === undefined || body.tools === null) return null;
@@ -332,7 +333,7 @@ function convertTools(
   return declarations.length ? { functionDeclarations: declarations } : null;
 }
 
-function convertToolChoice(
+export function convertToolChoice(
   body: Record<string, unknown>,
   hasTools: boolean,
 ): Record<string, unknown> | undefined {
@@ -352,7 +353,7 @@ function convertToolChoice(
   );
 }
 
-function convertGenerationConfig(
+export function convertGenerationConfig(
   body: Record<string, unknown>,
 ): Record<string, unknown> {
   const config: Record<string, unknown> = {};
@@ -366,7 +367,9 @@ function convertGenerationConfig(
   const topK = numberField(body.top_k);
   if (topK !== undefined) config.topK = topK;
   const maxTokens =
-    numberField(body.max_completion_tokens) ?? numberField(body.max_tokens);
+    numberField(body.max_completion_tokens) ??
+    numberField(body.max_tokens) ??
+    numberField(body.max_output_tokens);
   if (maxTokens !== undefined) config.maxOutputTokens = Math.floor(maxTokens);
 
   const stop = body.stop ?? body.stop_sequences;

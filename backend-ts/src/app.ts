@@ -1,4 +1,6 @@
 import { existsSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { InteractionTaskStore } from "./openai/interaction-task-store.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
@@ -17,7 +19,17 @@ import {
   toChatCompletion,
   type ConvertedChatRequest,
 } from "./openai/convert.js";
-type BuiltinToolName = "google_search" | "code_execution" | "google_maps" | "url_context";
+import {
+  convertResponsesRequest,
+  createResponsesStreamEncoder,
+  toResponsesResponse,
+} from "./openai/responses.js";
+import {
+  convertInteractionsRequest,
+  createInteractionsStreamEncoder,
+  toInteractionResponse,
+} from "./openai/interactions.js";
+type BuiltinToolName = "google_search" | "image_search" | "code_execution" | "google_maps" | "url_context";
 
 interface AppServices {
   readonly bridge: BackendBridge;
@@ -30,6 +42,7 @@ interface BuildAppOptions {
   readonly serveStatic?: boolean;
   readonly runtimeConfigFile?: string;
   readonly modelCatalogFile?: string;
+  readonly interactionTasksFile?: string;
 }
 
 // Fallback aligned with the current AI Studio ListModels generateContent catalog.
@@ -75,12 +88,25 @@ function modelCatalogEntries(value: unknown): Record<string, unknown>[] {
   ));
 }
 
-async function readModelCatalogSnapshot(file: string): Promise<Record<string, unknown>[] | undefined> {
+interface ModelCatalogSnapshot {
+  readonly models: Record<string, unknown>[];
+  readonly updatedAt: number;
+}
+
+// 快照年龄小于该值时 /models 直接读盘并触发后台刷新（stale-while-revalidate），
+// 避免每次列表请求都等一次 AI Studio 目录拉取；更旧的快照才现场拉取。
+const MODEL_CATALOG_SNAPSHOT_FRESH_MS = 5 * 60 * 1000;
+
+async function readModelCatalogSnapshot(file: string): Promise<ModelCatalogSnapshot | undefined> {
   try {
     const payload: unknown = JSON.parse(await readFile(file, "utf8"));
     const entries = isRecord(payload) && "models" in payload ? payload.models : payload;
     const models = modelCatalogEntries(entries);
-    return models.length > 0 ? models : undefined;
+    if (models.length === 0) return undefined;
+    const rawUpdatedAt = isRecord(payload) && typeof payload.updated_at === "string"
+      ? Date.parse(payload.updated_at)
+      : NaN;
+    return { models, updatedAt: Number.isFinite(rawUpdatedAt) ? rawUpdatedAt : Date.now() };
   } catch {
     return undefined;
   }
@@ -123,7 +149,7 @@ function upstreamErrorDetail(error: unknown): Record<string, unknown> {
   };
 }
 
-const BUILTIN_TOOL_NAMES = ["google_search", "code_execution", "google_maps", "url_context"] as const satisfies readonly BuiltinToolName[];
+const BUILTIN_TOOL_NAMES = ["google_search", "image_search", "code_execution", "google_maps", "url_context"] as const satisfies readonly BuiltinToolName[];
 // The marker is added by the same-origin WebUI. API keys authenticate requests
 // but no longer grant or configure access to AI Studio's built-in tools.
 const WEB_UI_HEADER = "x-aistudio-webui";
@@ -137,6 +163,7 @@ function requestedBuiltinTools(body: Record<string, unknown>): BuiltinToolName[]
       names.add(item.type as BuiltinToolName);
     }
     if (item.googleSearch !== undefined || item.googleSearchRetrieval !== undefined) names.add("google_search");
+    if (item.imageSearch !== undefined) names.add("image_search");
     if (item.codeExecution !== undefined) names.add("code_execution");
     if (item.googleMaps !== undefined) names.add("google_maps");
     if (item.urlContext !== undefined) names.add("url_context");
@@ -200,6 +227,7 @@ function isPublicRoute(method: string, url: string): boolean {
 async function sendStream(
   reply: FastifyReply,
   operation: (onChunk: (chunk: string) => void, signal: AbortSignal) => Promise<unknown>,
+  errorFrame?: (error: unknown) => string,
 ): Promise<void> {
   const controller = new AbortController();
   const onClose = (): void => {
@@ -222,7 +250,7 @@ async function sendStream(
       const detail = error instanceof BridgeError ? error.detail : errorDetail(String(error), "server_error");
       // The Gemini wire route must not emit event lines or [DONE]; clients parse
       // every data line as JSON and treat the natural stream end as completion.
-      reply.raw.write(`data: ${JSON.stringify({ error: detail })}\n\n`);
+      reply.raw.write(errorFrame ? errorFrame(error) : `data: ${JSON.stringify({ error: detail })}\n\n`);
     }
   } finally {
     reply.raw.off("close", onClose);
@@ -274,7 +302,15 @@ function openAiErrorBody(error: unknown): { status: number; body: Record<string,
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
   const bridge = options.services?.bridge ?? new NativeBackendBridge();
   const apiKeys = options.services?.apiKeys ?? new ApiKeyStore();
-  const requestContext = new WeakMap<object, { readonly webUi: boolean }>();
+  const requestContext = new WeakMap<object, { readonly webUi: boolean; readonly owner: string; readonly authenticated: boolean }>();
+  const appScope = randomUUID();
+  let taskStore: InteractionTaskStore | undefined;
+  const tasks = new Map<string, { owner: string; controller: AbortController; timer: ReturnType<typeof setTimeout> }>();
+  let closing = false;
+  const getTaskStore = (): InteractionTaskStore => {
+    if (closing) throw new HttpError(503, "Server is shutting down");
+    return taskStore ??= new InteractionTaskStore(options.interactionTasksFile ?? join(runtimeRoot, "data", "interaction-tasks.sqlite"));
+  };
   const app = Fastify({ logger: options.logger ?? true, bodyLimit: settings.bodyLimitBytes });
   const runtimeConfig = new RuntimeConfigStore(options.runtimeConfigFile);
   const modelCatalogFile = options.modelCatalogFile ?? join(runtimeRoot, "data", "model-catalog.json");
@@ -310,17 +346,17 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     if (isPublicRoute(request.method, request.url)) return;
     const authEnabled = settings.configuredApiKeys.size > 0 || await apiKeys.hasKeys();
     if (!authEnabled) {
-      requestContext.set(request, { webUi: isWebUiRequest(request) });
+      requestContext.set(request, { webUi: isWebUiRequest(request), owner: "anonymous", authenticated: false });
       return;
     }
     const token = requestToken({ headers: request.headers, query: request.query });
     if (token && settings.configuredApiKeys.has(token)) {
-      requestContext.set(request, { webUi: isWebUiRequest(request) });
+      requestContext.set(request, { webUi: isWebUiRequest(request), owner: createHash("sha256").update(token).digest("hex"), authenticated: true });
       return;
     }
     const authenticated = token ? await apiKeys.authenticate(token) : undefined;
     if (authenticated) {
-      requestContext.set(request, { webUi: isWebUiRequest(request) });
+      requestContext.set(request, { webUi: isWebUiRequest(request), owner: createHash("sha256").update(token!).digest("hex"), authenticated: true });
       return;
     }
     throw new HttpError(
@@ -486,10 +522,32 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   ));
   app.post("/accounts/import-cookies", async (request) => bridge.request("import_cookies", bodyRecord(request.body)));
 
+  // 后台刷新模型目录快照（fire-and-forget）：不阻塞响应，失败静默，完成前不重复触发。
+  let modelCatalogRefresh: Promise<void> | undefined;
+  function triggerModelCatalogBackgroundRefresh(): void {
+    if (modelCatalogRefresh) return;
+    modelCatalogRefresh = (async () => {
+      try {
+        const models = modelCatalogEntries(await bridge.request<unknown>("models"));
+        if (models.length > 0) await writeModelCatalogSnapshot(modelCatalogFile, models);
+      } catch (error) {
+        app.log.warn({ err: error }, "后台刷新 AI Studio 模型目录失败");
+      } finally {
+        modelCatalogRefresh = undefined;
+      }
+    })();
+  }
+
   async function availableModels(): Promise<{
     readonly models: Record<string, unknown>[];
     readonly source: "live" | "snapshot" | "fallback";
   }> {
+    const snapshot = await readModelCatalogSnapshot(modelCatalogFile);
+    // 快照足够新鲜：直接返回并在后台刷新，列表请求不再等待一次 AI Studio 拉取。
+    if (snapshot && Date.now() - snapshot.updatedAt < MODEL_CATALOG_SNAPSHOT_FRESH_MS) {
+      triggerModelCatalogBackgroundRefresh();
+      return { models: snapshot.models, source: "snapshot" };
+    }
     try {
       const models = modelCatalogEntries(await bridge.request<unknown>("models"));
       if (models.length > 0) {
@@ -503,8 +561,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     } catch (error) {
       app.log.warn({ err: error }, "读取 AI Studio 模型目录失败，尝试使用上次同步目录");
     }
-    const snapshot = await readModelCatalogSnapshot(modelCatalogFile);
-    if (snapshot) return { models: snapshot, source: "snapshot" };
+    if (snapshot) return { models: snapshot.models, source: "snapshot" };
     return { models: FALLBACK_MODELS.map(modelCard), source: "fallback" };
   }
 
@@ -576,6 +633,119 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     });
     return;
   });
+  app.post("/v1/responses", async (request, reply) => {
+    try {
+      const body = bodyRecord(request.body);
+      const converted = convertResponsesRequest(body, `${appScope}:${requestContext.get(request)?.owner ?? "anonymous"}`);
+      if (converted.stream) {
+        const encoder = createResponsesStreamEncoder(converted);
+        await sendStream(reply, async (onChunk, signal) => {
+          const finalResponse = await bridge.request<unknown>(
+            "generate",
+            { model: converted.model, body: converted.geminiBody, stream: true },
+            (raw) => {
+              for (const payload of parseSseDataPayloads(raw)) {
+                for (const frame of encoder.feed(payload)) onChunk(frame);
+              }
+            },
+            signal,
+          );
+          for (const frame of encoder.finish(finalResponse)) onChunk(frame);
+        });
+        return;
+      }
+      const geminiResponse = await bridge.request<unknown>(
+        "generate",
+        { model: converted.model, body: converted.geminiBody, stream: false },
+      );
+      return toResponsesResponse(geminiResponse, converted);
+    } catch (error) {
+      const failure = openAiErrorBody(error);
+      return reply.status(failure.status).send(failure.body);
+    }
+  });
+  app.post("/v1beta/interactions", async (request, reply) => {
+    try {
+      const body = bodyRecord(request.body);
+      const context = requestContext.get(request);
+      const owner = context?.owner ?? "anonymous";
+      if (!context?.authenticated && requestedBuiltinTools(body).length > 0) {
+        throw new OpenAiRequestError(403, "Built-in interaction tools require authentication", "authentication_required");
+      }
+      if (body.background === true && (body.store === false || body.stream === true)) {
+        throw new OpenAiRequestError(400, "background requires store:true and stream:false", "invalid_background");
+      }
+      const converted = convertInteractionsRequest(body, `${appScope}:${owner}`);
+      if (converted.background) {
+        if (tasks.size >= 4) throw new OpenAiRequestError(429, "Too many active background interactions", "rate_limit_exceeded");
+        const store = getTaskStore();
+        const id = converted.interactionId;
+        const initial = { id, object: "interaction", model: converted.model, status: "in_progress", steps: [], created: new Date().toISOString() };
+        store.create(id, owner, initial);
+        const controller = new AbortController();
+        const timer = setTimeout(() => {
+          if (!tasks.has(id) || closing) return;
+          store.fail(id, owner, { message: "Background interaction timed out", type: "timeout_error" });
+          controller.abort();
+          tasks.delete(id);
+        }, 10 * 60 * 1000);
+        timer.unref();
+        tasks.set(id, { owner, controller, timer });
+        void (async () => {
+          try {
+            const result = await bridge.request<unknown>("generate", { model: converted.model, body: converted.geminiBody, stream: false }, undefined, controller.signal);
+            if (!closing && tasks.has(id)) store.complete(id, owner, toInteractionResponse(result, converted));
+          } catch (error) {
+            if (!closing && tasks.has(id)) store.fail(id, owner, openAiErrorBody(error).body.error);
+          } finally {
+            clearTimeout(timer);
+            tasks.delete(id);
+          }
+        })();
+        return initial;
+      }
+      if (converted.stream) {
+        const encoder = createInteractionsStreamEncoder(converted);
+        await sendStream(reply, async (onChunk, signal) => {
+          const finalResponse = await bridge.request<unknown>(
+            "generate",
+            { model: converted.model, body: converted.geminiBody, stream: true },
+            (raw) => {
+              for (const payload of parseSseDataPayloads(raw)) {
+                for (const frame of encoder.feed(payload)) onChunk(frame);
+              }
+            },
+            signal,
+          );
+          for (const frame of encoder.finish(finalResponse)) onChunk(frame);
+          if (converted.store) {
+            try {
+              getTaskStore().save(converted.interactionId, owner, encoder.result(finalResponse));
+            } catch (persistError) {
+              request.log.warn(persistError, "failed to persist streamed interaction result");
+            }
+          }
+        }, (error) => `event: error\ndata: ${JSON.stringify({ event_type: "error", ...openAiErrorBody(error).body })}\n\n`);
+        return;
+      }
+      const geminiResponse = await bridge.request<unknown>(
+        "generate",
+        { model: converted.model, body: converted.geminiBody, stream: false },
+      );
+      const response = toInteractionResponse(geminiResponse, converted);
+      if (converted.store) {
+        try {
+          getTaskStore().save(converted.interactionId, owner, response);
+        } catch (persistError) {
+          request.log.warn(persistError, "failed to persist interaction result");
+        }
+      }
+      return response;
+    } catch (error) {
+      const failure = openAiErrorBody(error);
+      return reply.status(failure.status).send(failure.body);
+    }
+  });
   app.get("/v1/models", async () => {
     const { models } = await availableModels();
     return {
@@ -588,7 +758,46 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       })),
     };
   });
-  app.addHook("onClose", async () => bridge.stop());
+  app.get<{ Params: { id: string } }>("/v1beta/interactions/:id", async (request, reply) => {
+    try {
+      const response = getTaskStore().get(request.params.id, requestContext.get(request)?.owner ?? "anonymous");
+      if (!response) throw new OpenAiRequestError(404, "Interaction not found", "invalid_interaction_id");
+      return response;
+    } catch (error) {
+      const failure = openAiErrorBody(error);
+      return reply.status(failure.status).send(failure.body);
+    }
+  });
+  app.delete<{ Params: { id: string } }>("/v1beta/interactions/:id", async (request, reply) => {
+    try {
+      const owner = requestContext.get(request)?.owner ?? "anonymous";
+      const id = request.params.id;
+      const task = tasks.get(id);
+      if (!task || task.owner !== owner) {
+        throw new OpenAiRequestError(404, "Interaction not found or already finished", "invalid_interaction_id");
+      }
+      clearTimeout(task.timer);
+      tasks.delete(id);
+      task.controller.abort();
+      const store = getTaskStore();
+      store.fail(id, owner, { code: "cancelled", message: "Interaction cancelled by client." });
+      return store.get(id, owner);
+    } catch (error) {
+      const failure = openAiErrorBody(error);
+      return reply.status(failure.status).send(failure.body);
+    }
+  });
+  app.addHook("onClose", async () => {
+    closing = true;
+    for (const [id, task] of tasks) {
+      clearTimeout(task.timer);
+      taskStore?.fail(id, task.owner, { message: "Server shut down before interaction completed", type: "cancelled" });
+      task.controller.abort();
+    }
+    tasks.clear();
+    taskStore?.close();
+    await bridge.stop();
+  });
   await bridge.start();
   return app;
 }

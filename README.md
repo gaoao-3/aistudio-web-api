@@ -72,7 +72,7 @@ flowchart TD
 | ⚡ | **Gemini 原生接口** | `generateContent` 非流式、`streamGenerateContent` SSE 流式、`countTokens` 权威 token 计数 |
 | 🤝 | **OpenAI 兼容接口** | `/v1/chat/completions` 非流式与 SSE 流式（`data: [DONE]` 收尾）及 `/v1/models`，OpenAI SDK / One-API / New-API 可直接对接 |
 | 🖼️ | **多模态输入** | 图片、音频、视频、PDF、文本和常见代码文件；支持 `inlineData` 与 Google Files `fileData` |
-| 🛠️ | **原生工具** | WebUI 可使用 Google 搜索、代码执行、Google Maps、URL Context；API 支持完整的原生 Function Calling 链路（声明 → `functionCall` → 客户端执行 → `functionResponse` 回传 → 最终回答） |
+| 🛠️ | **原生工具** | WebUI 可使用 Google 搜索、图片搜索、代码执行、Google Maps、URL Context；API 支持完整的原生 Function Calling 链路（声明 → `functionCall` → 客户端执行 → `functionResponse` 回传 → 最终回答） |
 | 🧠 | **思考与统计** | 思考摘要、SSE 增量、token 用量和按模型统计 |
 | 🔁 | **多账号轮询** | `round_robin`、`lru`、`least_rl`；429 自动冷却切换，403 无权限的 账号×模型 组合长效跳过 |
 | 🖥️ | **WebUI** | 对话、历史、账号、API 密钥、统计和服务设置，适配桌面端与移动端 |
@@ -192,7 +192,7 @@ API 请求中的内置原生工具声明会被移除，不会发送到 AI Studio
 ## 📚 API 用法
 
 > [!NOTE]
-> 所有 Gemini 路由同时提供 `/v1` 和 `/v1beta` 两个版本前缀，下表以 `/v1beta` 为例。
+> Gemini models 路由同时提供 `/v1` 和 `/v1beta`；Interactions 仅提供 `/v1beta`。
 
 ### 常用路由
 
@@ -205,12 +205,47 @@ API 请求中的内置原生工具声明会被移除，不会发送到 AI Studio
 | `POST` | `/v1beta/models/{model}:generateContent` | Gemini 原生非流式生成 |
 | `POST` | `/v1beta/models/{model}:streamGenerateContent` | Gemini 原生 SSE 流式生成 |
 | `POST` | `/v1beta/models/{model}:countTokens` | 权威 token 计数，返回 `{"totalTokens": N}` |
+| `POST` | `/v1beta/interactions` | **Gemini Interactions API**（steps 时间轴 + `previous_interaction_id` 状态续接，非流式 + SSE 流式） |
 | `GET` | `/v1/models` | OpenAI 兼容模型列表（`object: "list"`） |
 | `POST` | `/v1/chat/completions` | OpenAI 兼容对话补全（非流式 + SSE 流式） |
+| `POST` | `/v1/responses` | OpenAI Responses API 兼容（typed items + `previous_response_id` 状态续接） |
 | `GET` / `POST` / `PUT` / `DELETE` | `/api-keys` | 创建、查看、更新权限和删除本地服务密钥 |
 | `GET` | `/stats` | 用量统计 |
 | `GET` / `PUT` | `/config/runtime` | 运行时配置 |
 | `GET` / `POST` | `/rotation` 相关接口 | 账号轮询状态和切换 |
+
+### Interactions 与本地后台任务
+
+`POST /v1beta/interactions` 支持字符串、Content 对象/数组、Step 数组输入，`system_instruction`、`response_format.schema`、图片尺寸配置，以及客户端执行的函数调用（`function_result.result`）。流式格式以实测 `@google/genai 2.21.0` 为准：`interaction.created`、`interaction.status_update`、`step.start/delta/stop`、`interaction.completed`；函数参数增量为 `{type:"arguments_delta", arguments:"..."}`。
+
+```python
+import time
+from google import genai
+
+client = genai.Client(
+    api_key="<本地服务密钥>",
+    http_options={"base_url": "http://localhost:3006", "api_version": "v1beta"},
+)
+task = client.interactions.create(
+    model="gemini-3.6-flash", input="详细分析这个问题", background=True,
+)
+while task.status in ("queued", "in_progress"):
+    time.sleep(2)
+    task = client.interactions.get(task.id)
+if task.status == "completed":
+    print(task.output_text)
+else:
+    print(task.status, task)
+```
+
+- 后台执行由**本地网关**完成，不是 Google 托管任务。`GET /v1beta/interactions/{id}` 查询后台任务和已持久化的前台结果（`store:false` 不持久化）；`DELETE /v1beta/interactions/{id}` 取消进行中的后台任务（标记 failed/cancelled，不是删除记录）。
+- 部分模型（如 gemini-3.8-flash 的搜索场景）上游拒绝默认 MINIMAL 思考级别：可用 `generation_config.thinking_level` 按请求指定，或设 `AISTUDIO_DEFAULT_THINKING_LEVEL=medium` 作为全局默认（显式请求优先）。
+- 任务结果保存于 `data/interaction-tasks.sqlite`，默认保留 24 小时、最多 256 条；容量不足时优先淘汰已结束任务。单进程最多 4 个活动任务，超过返回 429；单任务超时 10 分钟。
+- `background:true` 不允许 `store:false` 或 `stream:true`。客户端断开不取消后台任务；服务关闭或重启中断的任务标记失败，不伪造恢复执行。
+- `previous_interaction_id` / `previous_response_id` 保存完整累计对话，仍是进程内存会话（10 分钟、最多 256 条），重启后不可续接。后台结果仍可查询，但不代表其续接历史永久保存。
+- 会话和后台查询按已鉴权 API Key 隔离；无鉴权部署共享匿名身份，不适合不可信多用户。Interactions 的内置工具仅允许已鉴权请求使用，不能用 WebUI 标记绕过。
+- 不提供 GET 流恢复或受管智能体；远程 MCP、音频输出配置等未接入能力不应视为支持。搜索中间步骤不能从页面 wire 完整还原。
+- SDK 冒烟脚本：在 `backend-ts` 下运行 `node --import tsx --import ./tests/setup-runtime.ts scripts/sdk-compat-smoke.mjs <安装了SDK的目录>`。实测版本：`@google/genai 2.21.0`、`openai 7.10.0`。脚本经过真实 localhost HTTP，但上游为确定性测试 bridge，不消耗 Google 配额。
 
 ### 读取模型目录
 
@@ -307,7 +342,7 @@ curl http://localhost:3006/v1beta/models/gemini-3.8-flash:countTokens \
 
 ### 原生请求与工具调用
 
-原生接口使用 Google Gemini 的 `contents` / `parts` 格式，支持文本、多模态输入、思考、结构化输出、Google 搜索、代码执行、Maps、URL Context 和自定义函数声明。
+原生接口使用 Google Gemini 的 `contents` / `parts` 格式，支持文本、多模态输入、思考、结构化输出、Google 搜索、图片搜索（`imageSearch`）、代码执行、Maps、URL Context 和自定义函数声明。
 
 Gemini 3 的无状态多轮请求必须保留模型返回的 `thought` 部分及 `thoughtSignature`；函数调用结果使用标准 `functionResponse` 回传，服务会自动携带首轮的 `responseId` 并固定到原账号完成原生续接。
 
@@ -409,7 +444,7 @@ for chunk in stream:
 - `messages`：`system`/`developer`、`user`（文本、`image_url` data URI、`file` data URI）、`assistant`（含 `tool_calls`）、`tool` 结果回传（按 `tool_call_id` 匹配函数名）。
 - 采样与输出：`temperature`、`top_p`、`top_k`、`max_tokens`/`max_completion_tokens`、`stop`、`response_format`（`json_object` / `json_schema`）、`reasoning_effort`（映射为 Gemini thinkingLevel）。
 - 工具：`tools`（function 声明）、`tool_choice`（`auto`/`none`/`required`/指定函数）。
-- 流式：`stream`、`stream_options.include_usage`（末帧携带 `usage`）。
+- 流式：`stream`、`stream_options.include_usage`（末帧携带 `usage`）。`parallel_tool_calls` 参数会被接受，但 Gemini 上游没有对应的"禁止并行工具调用"开关，当前按缺省行为处理（模型可并行发起多个工具调用）。
 - Gemini 3 工具调用会在 `tool_calls[].extra_content.google.thought_signature` 中返回思考签名；客户端必须在下一轮请求中原样保留该字段。
 
 说明：思考内容以 `reasoning_content` 字段返回（流式为增量帧）；错误统一返回 OpenAI 风格 `{"error": {"message", "type", "code"}}`；鉴权与 Gemini 路由一致（`Authorization: Bearer` 或 `x-api-key`）。远程图片 URL 不支持，请改用 data URI。

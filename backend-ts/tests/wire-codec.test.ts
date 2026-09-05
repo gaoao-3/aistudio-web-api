@@ -3,6 +3,25 @@ import { describe, it } from "node:test";
 import { buildToolsFromNames, decodeContents, encodeContent, encodePart, rewriteWireBody } from "../src/gateway/wire-codec.js";
 
 describe("AI Studio wire codec", () => {
+  it("builds the image search tool template for gemini models and rejects it elsewhere", () => {
+    // 与 image 模型分支的 image-only 编码同构
+    assert.deepEqual(buildToolsFromNames(["image_search"], "models/gemini-3.8-flash"), [
+      [null, null, null, [null, [null, []]]],
+    ]);
+    assert.deepEqual(buildToolsFromNames(["image_search", "google_search"], "models/gemini-3.8-flash"), [
+      [null, null, null, [null, [null, []]]],
+      [null, null, null, [null, [[]]]],
+    ]);
+    // 非 gemini- 模型仍只放行 search/code
+    assert.throws(
+      () => buildToolsFromNames(["image_search"], "models/gemma-4-31b-it"),
+      /not allowed for model/u,
+    );
+    // image 模型分支本就把 image_search 映射为 image-only 编码
+    assert.deepEqual(buildToolsFromNames(["image_search"], "models/gemini-3.1-flash-image"), [
+      [null, null, null, [null, [null, []]]],
+    ]);
+  });
   it("rewrites text requests and sanitizes captured structured output", () => {
     const original = '["models/original",[[[[null,"old"]],"user"]],null,[null,["6"],null,128,0.5,0.8,16,"application/json",[6]],"snapshot",null,null]';
     const parsed = JSON.parse(rewriteWireBody(original, {

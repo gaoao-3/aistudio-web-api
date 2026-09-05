@@ -1,8 +1,28 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { encodeSchemaToWire, normalizeGeminiRequest } from "../src/gateway/gemini-normalize.js";
+import { buildToolsFromNames } from "../src/gateway/wire-codec.js";
 
 describe("Gemini request normalization", () => {
+  it("recognizes the imageSearch native tool key", () => {
+    const result = normalizeGeminiRequest("gemini-3.8-flash", {
+      contents: [{ role: "user", parts: [{ text: "find" }] }],
+      tools: [{ imageSearch: {} }],
+    });
+    assert.deepEqual(result.tools, buildToolsFromNames(["image_search"], "gemini-3.8-flash"));
+  });
+  it("injects the configured default thinking level only when the request omits it", () => {
+    const body = { contents: [{ role: "user", parts: [{ text: "hi" }] }] };
+    const withoutDefault = normalizeGeminiRequest("gemini-3.8-flash", body);
+    assert.equal(withoutDefault.generationConfig.thinkingConfig, undefined);
+    const withDefault = normalizeGeminiRequest("gemini-3.8-flash", body, { thinkingLevel: "MEDIUM" });
+    assert.deepEqual(withDefault.generationConfig.thinkingConfig, [1, null, null, 2]);
+    const explicit = normalizeGeminiRequest("gemini-3.8-flash", {
+      ...body,
+      generationConfig: { thinkingConfig: { thinkingLevel: "LOW" } },
+    }, { thinkingLevel: "MEDIUM" });
+    assert.deepEqual(explicit.generationConfig.thinkingConfig, [1, null, null, 1]);
+  });
   it("normalizes tool declarations and preserves tool turn ids", () => {
     const result = normalizeGeminiRequest("gemini-3.5-flash", {
       contents: [

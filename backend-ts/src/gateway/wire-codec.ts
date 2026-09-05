@@ -75,6 +75,8 @@ export const TOOL_TEMPLATES = {
   google_search: [null, null, null, [null, [[]]]],
   google_maps: [null, null, null, null, null, null, null, null, null, null, []],
   url_context: [null, null, null, null, null, null, null, []],
+  // 图片搜索：与 image 模型分支的 image-only 编码同构（[null, null, null, [null, [null, []]]]）。
+  image_search: [null, null, null, [null, [null, []]]],
 } as const;
 
 function ensureLength(values: unknown[], size: number): void {
@@ -308,7 +310,7 @@ export function buildToolsFromNames(names: readonly string[], model: string): un
     return [[null, null, null, [null, google && image ? [[], []] : google ? [[]] : [null, []]]]];
   }
   const allowed = normalized.startsWith("gemini-")
-    ? new Set(["google_search", "code_execution", "google_maps", "url_context"])
+    ? new Set(["google_search", "image_search", "code_execution", "google_maps", "url_context"])
     : new Set(["google_search", "code_execution"]);
   return names.map(raw => {
     const name = raw.trim().toLowerCase() as keyof typeof TOOL_TEMPLATES;

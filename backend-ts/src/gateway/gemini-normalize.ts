@@ -199,7 +199,12 @@ function normalizeThinking(value: unknown): NormalizedThinkingConfig {
   return [Number(value.mode ?? 1), null, null, level];
 }
 
-export function normalizeGeminiRequest(modelPath: string, body: unknown): NormalizedGeminiRequest {
+export interface NormalizeDefaults {
+  /** 请求未显式指定 thinkingConfig 时注入的默认思考级别。 */
+  readonly thinkingLevel?: string | undefined;
+}
+
+export function normalizeGeminiRequest(modelPath: string, body: unknown, defaults?: NormalizeDefaults): NormalizedGeminiRequest {
   if (!isRecord(body)) throw new Error("contents is required");
   if (body.cachedContent !== undefined) {
     throw new HttpError(400, {
@@ -231,6 +236,7 @@ export function normalizeGeminiRequest(modelPath: string, body: unknown): Normal
       const names: string[] = [];
       if (rawTool.codeExecution !== undefined) names.push("code_execution");
       if (rawTool.googleSearch !== undefined || rawTool.googleSearchRetrieval !== undefined) names.push("google_search");
+      if (rawTool.imageSearch !== undefined) names.push("image_search");
       if (rawTool.googleMaps !== undefined) names.push("google_maps");
       if (rawTool.urlContext !== undefined) names.push("url_context");
       if (Array.isArray(rawTool.functionDeclarations)) {
@@ -254,6 +260,7 @@ export function normalizeGeminiRequest(modelPath: string, body: unknown): Normal
     || (model.slice("models/".length).toLowerCase().startsWith("gemini-3") && hasBuiltinTools && hasFunctionTools);
   const generationConfig: Record<string, unknown> = { ...rawGeneration };
   if (rawGeneration.thinkingConfig !== undefined) generationConfig.thinkingConfig = normalizeThinking(rawGeneration.thinkingConfig);
+  else if (defaults?.thinkingLevel) generationConfig.thinkingConfig = normalizeThinking({ thinkingLevel: defaults.thinkingLevel });
   if (isRecord(rawGeneration.responseSchema)) {
     // 结构化输出 schema 必须转为 wire 位置编码；required 走常规槽位（与函数声明不同）。
     generationConfig.responseSchema = encodeSchemaToWire(rawGeneration.responseSchema, true);
