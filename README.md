@@ -520,7 +520,7 @@ for chunk in stream:
 
 ### 生成响应缓存
 
-默认采用 `deterministic` 策略：仅缓存请求完全相同、`temperature=0`、显式固定 `seed`，且不包含工具、函数调用/结果、外部文件或 Cached Content 的成功响应。`exact` 可恢复旧版"所有无工具精确请求"行为；流式请求命中后返回一个完整响应事件。缓存持久化在 SQLite 中。
+默认采用 `deterministic` 策略：仅缓存请求完全相同、`temperature=0`、显式固定 `seed`，且不包含工具、函数调用/结果、外部文件或 Cached Content 的成功响应。`exact` 缓存所有精确请求——包括带 tools 的（缓存的只是模型的文本/functionCall 决定，工具副作用由客户端重新执行），仅排除外部文件引用（fileData/cachedContent）；流式请求命中后返回一个完整响应事件。缓存持久化在 SQLite 中。
 
 | 变量 | 默认值 | 说明 |
 | --- | ---: | --- |

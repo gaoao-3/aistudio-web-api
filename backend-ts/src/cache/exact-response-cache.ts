@@ -49,6 +49,15 @@ function hasTools(body: unknown): boolean {
   return Array.isArray(tools) && tools.length > 0;
 }
 
+function containsExternalReference(value: unknown): boolean {
+  // fileData/cachedContent 是外部句柄：引用的内容变了请求体也看不出来，任何模式都不缓存
+  if (Array.isArray(value)) return value.some(containsExternalReference);
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (["fileData", "file_data", "cachedContent", "cached_content"].some(key => key in record)) return true;
+  return Object.values(record).some(containsExternalReference);
+}
+
 function containsDynamicPart(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(containsDynamicPart);
   if (!value || typeof value !== "object") return false;
@@ -69,7 +78,10 @@ function deterministicRequest(body: unknown): boolean {
   return temperature === 0 && typeof seed === "number" && Number.isSafeInteger(seed);
 }
 
-/** 精确响应缓存的统一键：规范化后的 {model, body} 的 SHA-256。带 tools / 超限 / 禁用返回 undefined。 */
+/** 精确响应缓存的统一键：规范化后的 {model, body} 的 SHA-256。
+ *  任何模式都跳过外部引用（fileData/cachedContent）；deterministic 额外要求
+ *  无 tools + temperature=0 + 固定 seed + 无动态 part；exact 允许 tools——
+ *  缓存的只是模型输出文本/functionCall 决定，工具副作用在客户端重新执行。 */
 export function computeResponseCacheKey(options: ExactResponseCacheOptions, model: string, body: unknown): string | undefined {
   const mode = options.mode ?? "exact";
   if (
@@ -77,8 +89,8 @@ export function computeResponseCacheKey(options: ExactResponseCacheOptions, mode
     mode === "off" ||
     options.ttlSeconds <= 0 ||
     options.maxBytes <= 0 ||
-    hasTools(body) ||
-    (mode === "deterministic" && !deterministicRequest(body))
+    containsExternalReference(body) ||
+    (mode === "deterministic" && (hasTools(body) || !deterministicRequest(body)))
   ) return undefined;
   const canonical = JSON.stringify(canonicalize({ model, body }));
   if (Buffer.byteLength(canonical) > options.maxEntryBytes)

@@ -696,7 +696,7 @@ export class NativeBackendBridge implements BackendBridge {
         return response;
       }
     } else if (trace) {
-      // 带 tools 或超限的请求不参与缓存
+      // 外部引用（fileData/cachedContent）或超限的请求不参与缓存
       trace.cache = "bypass";
     }
     const upstream = this.generateUpstream(model, body, onChunk, signal, onRateLimited, cacheKey, trace, routing);

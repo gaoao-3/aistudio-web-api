@@ -217,7 +217,7 @@ const SETTING_DEFS: ReadonlyArray<SettingDef> = [
     key: "response_cache_mode",
     env: "AISTUDIO_RESPONSE_CACHE_MODE",
     label: "生成响应缓存策略",
-    description: "deterministic 仅缓存 temperature=0、固定 seed、无工具/函数/外部文件的请求；exact 复用所有无工具的精确请求；off 关闭缓存",
+    description: "deterministic 仅缓存 temperature=0、固定 seed、无工具/函数/外部文件的请求；exact 复用所有精确请求（含工具调用——工具由客户端重新执行，副作用不入缓存；外部文件引用除外）；off 关闭缓存",
     type: "enum",
     options: [
       { value: "off", label: "关闭" },

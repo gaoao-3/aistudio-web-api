@@ -27,9 +27,10 @@ test("sqlite response cache matches the in-memory key/get/set semantics", () => 
     const second = cache.key("model", { contents: [{ a: 1, b: 2 }] });
     assert.equal(first, second);
     assert.ok(first);
-    // 带 tools 的请求不进缓存
+    // exact 模式：带 tools 的请求进缓存；外部引用不进
+    assert.ok(cache.key("model", { tools: [{ googleSearch: {} }], contents: [] }));
     assert.equal(
-      cache.key("model", { tools: [{ googleSearch: {} }], contents: [] }),
+      cache.key("model", { contents: [{ parts: [{ fileData: { fileUri: "https://example.com/f" } }] }] }),
       undefined,
     );
 

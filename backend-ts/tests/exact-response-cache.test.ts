@@ -25,16 +25,41 @@ test("exact response cache canonicalizes object keys and clones responses", () =
   assert.deepEqual(cache.get(first), response);
 });
 
-test("exact response cache skips tool calls and oversized requests", () => {
+test("exact cache allows tool requests but skips external references and oversized requests", () => {
   const cache = new ExactResponseCache(options);
+  // exact 模式：带 tools 的请求参与缓存（工具副作用在客户端重新执行）
+  assert.ok(cache.key("model", { tools: [{ googleSearch: {} }], contents: [] }));
+  assert.ok(cache.key("model", {
+    tools: [{ functionDeclarations: [{ name: "get_weather" }] }],
+    contents: [
+      { role: "user", parts: [{ text: "天气?" }] },
+      { role: "model", parts: [{ functionCall: { name: "get_weather", args: { city: "Paris" } } }] },
+      { role: "user", parts: [{ functionResponse: { name: "get_weather", response: { temp: 20 } } }] },
+    ],
+  }));
+  // 外部句柄（fileData/cachedContent）任何模式都跳过
   assert.equal(
-    cache.key("model", { tools: [{ googleSearch: {} }], contents: [] }),
+    cache.key("model", { contents: [{ parts: [{ fileData: { fileUri: "https://example.com/f" } }] }] }),
+    undefined,
+  );
+  assert.equal(
+    cache.key("model", { cachedContent: "cachedContents/abc", contents: [] }),
     undefined,
   );
   assert.equal(
     cache.key("model", { contents: [{ text: "x".repeat(600) }] }),
     undefined,
   );
+});
+
+test("deterministic cache still skips tool requests", () => {
+  const cache = new ExactResponseCache({ ...options, mode: "deterministic" });
+  const deterministic = {
+    contents: [{ role: "user", parts: [{ text: "hello" }] }],
+    generationConfig: { temperature: 0, seed: 42 },
+  };
+  assert.equal(cache.key("model", { ...deterministic, tools: [{ googleSearch: {} }] }), undefined);
+  assert.ok(cache.key("model", deterministic));
 });
 
 test("exact response cache counts oversized responses as skipped stores", () => {
