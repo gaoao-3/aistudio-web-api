@@ -4,6 +4,12 @@
 
 :root {
   color-scheme: light;
+  /* Vuetify 核心 base 层未打包（vite-plugin-vuetify autoImport 只带组件样式），
+     导致全局 --v-theme-overlay-multiplier 缺失：所有 overlay 的
+     opacity: calc(x * var(--v-theme-overlay-multiplier)) 因变量未定义而失效，
+     回退到初始值 1——选中/hover 的列表项被 currentColor 实心色块盖住（白块）。
+     在此补回 Vuetify 默认值 1。 */
+  --v-theme-overlay-multiplier: 1;
   --bg: #fafafa;
   --bg-grad: none;
   --surface: #ffffff;
