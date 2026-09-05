@@ -367,7 +367,19 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
 
   if ((options.serveStatic ?? true) && existsSync(settings.staticDir)) {
-    await app.register(fastifyStatic, { root: settings.staticDir, prefix: "/static/" });
+    await app.register(fastifyStatic, {
+      root: settings.staticDir,
+      prefix: "/static/",
+      setHeaders: (reply, filePath) => {
+        // 入口 HTML 必须每次校验（否则发新版后浏览器还引用旧 hash 资源）；
+        // assets/ 下文件名带内容 hash，可以放心长缓存。
+        if (/[\\/]assets[\\/]/.test(filePath)) {
+          reply.header("cache-control", "public, max-age=31536000, immutable");
+        } else {
+          reply.header("cache-control", "no-cache");
+        }
+      },
+    });
   }
 
   app.get("/", async (_request, reply) => reply.redirect("/static/index.html"));
