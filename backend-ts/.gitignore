@@ -2,4 +2,3 @@ node_modules/
 dist/
 coverage/
 .runtime/
-.ekko-tmp
