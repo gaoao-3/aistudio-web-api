@@ -15,8 +15,8 @@ importers:
         specifier: ^0.5.8
         version: 0.5.8(playwright-core@1.62.1)
       dotenv:
-        specifier: ^17.2.1
-        version: 17.4.2
+        specifier: ^18.0.0
+        version: 18.0.0
       fastify:
         specifier: ^5.4.0
         version: 5.11.2
@@ -424,9 +424,10 @@ packages:
     resolution: {integrity: sha512-0je+qPKHEMohvfRTCEo3CrPG6cAzAYgmzKyxRiYSSDkS6eGJdyVJm7WaYA5ECaAD9wLB2T4EEeymA5aFVcYXCA==}
     engines: {node: '>=6'}
 
-  dotenv@17.4.2:
-    resolution: {integrity: sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw==}
+  dotenv@18.0.0:
+    resolution: {integrity: sha512-16YSUvsKtKbwrTbESvtTSZzzJUug6jdFdqiBFg9Q6Bk1JY9r0hAtrtTiWxdI9YrsgOTmkjZRdgU0n3LnwGpECw==}
     engines: {node: '>=12'}
+    hasBin: true
 
   esbuild@0.28.1:
     resolution: {integrity: sha512-HrJrvZv5ayxBzPfwphOoNzkzOIIlifzk0KJrGK2c8R4+LKpMtpYLQeUdjnwjWv/LZlkH2laZk+4w78pi99D4Vw==}
@@ -879,7 +880,7 @@ snapshots:
 
   dequal@2.0.3: {}
 
-  dotenv@17.4.2: {}
+  dotenv@18.0.0: {}
 
   esbuild@0.28.1:
     optionalDependencies:
