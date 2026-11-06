@@ -10,7 +10,7 @@
   },
   "devDependencies": {
     "@types/katex": "^0.16.8",
-    "@vitejs/plugin-vue": "^6.0.8",
+    "@vitejs/plugin-vue": "^6.0.9",
     "typescript": "^5.6.0",
     "unocss": "^66.7.5",
     "vite": "^5.4.0",
